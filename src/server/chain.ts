@@ -1,43 +1,34 @@
 /**
- * chain.ts — viem clients and AaveHFCallback contract interactions.
+ * chain.ts — viem clients and contract interactions.
  *
  * All on-chain writes use the server wallet (SERVER_PRIVATE_KEY).
  * The server wallet must be the `owner` of AaveHFCallback.
+ *
+ * Flow:
+ *   1. Agent pays via x402 → server receives USDC
+ *   2. Server calls registerSubscription() → writes to CC on Base Sepolia
+ *   3. CC emits SubscriptionRegistered → RC picks it up on Kopli
+ *   4. RC fires runCycle() callbacks via CRON → CC checks HF + acts
  */
 
 import {
   createPublicClient,
   createWalletClient,
   http,
-  parseAbi,
   keccak256,
   toHex,
+  decodeEventLog,
   type Address,
   type Hash,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-
-// ── ABI (only what the server calls) ──────────────────────────────────────────
-
-const AAVE_HF_CALLBACK_ABI = parseAbi([
-  "function register(address agent, address protectedUser, address collateralAsset, uint256 threshold, uint256 collateralAmount, uint256 duration) returns (uint256 id)",
-  "function cancelSubscription(uint256 id)",
-  "function getSubscription(uint256 id) view returns (tuple(address agent, address protectedUser, address collateralAsset, uint256 threshold, uint256 collateralAmount, uint256 expiresAt, bool active))",
-  "function activeSubscriptionCount() view returns (uint256)",
-  "function getActiveIds() view returns (uint256[])",
-  "event SubscriptionRegistered(uint256 indexed id, address indexed agent, address indexed protectedUser, uint256 threshold, uint256 expiresAt)",
-]);
-
-// ── Event selector for log parsing ────────────────────────────────────────────
-
-const SUBSCRIPTION_REGISTERED_SELECTOR = keccak256(
-  toHex("SubscriptionRegistered(uint256,address,address,uint256,uint256)")
-);
+import { AAVE_HF_CALLBACK_ABI } from "../abis/aave-hf-callback.js";
+import { CONTRACTS } from "../config/contracts.js";
 
 // ── Kopli chain definition (not in viem's built-in chains) ────────────────────
 
-const kopliChain = {
+export const kopliChain = {
   id: 5_318_008,
   name: "Kopli Testnet",
   nativeCurrency: { name: "REACT", symbol: "REACT", decimals: 18 },
@@ -45,6 +36,12 @@ const kopliChain = {
     default: { http: ["https://kopli-rpc.rkt.ink"] },
   },
 } as const;
+
+// ── Event selector for log parsing ────────────────────────────────────────────
+
+const SUBSCRIPTION_REGISTERED_SELECTOR = keccak256(
+  toHex("SubscriptionRegistered(uint256,address,address,uint256,uint256)")
+);
 
 // ── Client setup ──────────────────────────────────────────────────────────────
 
@@ -59,7 +56,7 @@ export const publicClient = createPublicClient({
   transport: http(process.env.BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org"),
 });
 
-const kopliClient = createPublicClient({
+export const kopliClient = createPublicClient({
   chain: kopliChain,
   transport: http(process.env.KOPLI_RPC_URL ?? "https://kopli-rpc.rkt.ink"),
 });
@@ -73,19 +70,19 @@ export function getWalletClient() {
 }
 
 function getCallbackAddress(): Address {
-  const addr = process.env.AAVE_HF_CALLBACK_ADDRESS;
-  if (!addr || addr === "0x0000000000000000000000000000000000000000") {
+  const addr = CONTRACTS.aaveHFCallback;
+  if (!addr || (addr as string) === "") {
     throw new Error("AAVE_HF_CALLBACK_ADDRESS not set in .env");
   }
-  return addr as Address;
+  return addr;
 }
 
 function getReactiveAddress(): Address {
-  const addr = process.env.AAVE_HF_REACTIVE_ADDRESS;
-  if (!addr || addr === "0x0000000000000000000000000000000000000000") {
+  const addr = CONTRACTS.aaveHFReactive;
+  if (!addr || (addr as string) === "") {
     throw new Error("AAVE_HF_REACTIVE_ADDRESS not set in .env");
   }
-  return addr as Address;
+  return addr;
 }
 
 // ── Contract helpers ──────────────────────────────────────────────────────────
@@ -104,13 +101,21 @@ export interface RegisterParams {
 
 /**
  * Register an HF guard subscription on AaveHFCallback.
- * Returns the subscription ID parsed from the SubscriptionRegistered event log.
+ *
+ * Called by the server after x402 payment is confirmed.
+ * The CC's register() is owner-only — the server wallet must be the CC owner.
+ *
+ * Returns the subscription ID parsed from the SubscriptionRegistered event.
  */
 export async function registerSubscription(
   params: RegisterParams
 ): Promise<{ subscriptionId: bigint; txHash: Hash }> {
   const walletClient = getWalletClient();
   const callbackAddress = getCallbackAddress();
+
+  console.log(`[chain] Registering subscription on ${callbackAddress}...`);
+  console.log(`[chain]   agent=${params.agent} user=${params.protectedUser}`);
+  console.log(`[chain]   threshold=${params.threshold} duration=${params.duration}s`);
 
   const txHash = await walletClient.writeContract({
     address: callbackAddress,
@@ -126,9 +131,11 @@ export async function registerSubscription(
     ],
   });
 
+  console.log(`[chain] Tx submitted: ${txHash}`);
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  console.log(`[chain] Tx confirmed in block ${receipt.blockNumber}`);
 
-  // Find the SubscriptionRegistered log by matching topic[0] (event selector)
+  // Find the SubscriptionRegistered log by matching topic[0]
   const registeredLog = receipt.logs.find(
     (log) =>
       log.address.toLowerCase() === callbackAddress.toLowerCase() &&
@@ -138,13 +145,19 @@ export async function registerSubscription(
   if (!registeredLog || !registeredLog.topics[1]) {
     throw new Error(
       `SubscriptionRegistered event not found in tx ${txHash}. ` +
-        `Logs: ${JSON.stringify(receipt.logs.map((l) => l.topics[0]))}`
+        `This likely means the CC ABI doesn't match the deployed contract. ` +
+        `Logs found: ${receipt.logs.length}`
     );
   }
 
+  // topic[1] = indexed id (uint256)
   const subscriptionId = BigInt(registeredLog.topics[1]);
+  console.log(`[chain] Subscription #${subscriptionId} registered`);
+
   return { subscriptionId, txHash };
 }
+
+// ── Read helpers ──────────────────────────────────────────────────────────────
 
 export interface SubscriptionData {
   agent: string;
@@ -167,21 +180,21 @@ export async function getSubscription(subscriptionId: bigint): Promise<Subscript
     args: [subscriptionId],
   });
 
-  // viem returns a tuple; cast to our typed interface
+  // viem returns a tuple for multi-return functions
   const r = result as any;
   return {
-    agent: r.agent ?? r[0],
-    protectedUser: r.protectedUser ?? r[1],
-    collateralAsset: r.collateralAsset ?? r[2],
-    threshold: BigInt(r.threshold ?? r[3]),
-    collateralAmount: BigInt(r.collateralAmount ?? r[4]),
-    expiresAt: BigInt(r.expiresAt ?? r[5]),
-    active: Boolean(r.active ?? r[6]),
+    agent: r[0] ?? r.agent,
+    protectedUser: r[1] ?? r.protectedUser,
+    collateralAsset: r[2] ?? r.collateralAsset,
+    threshold: BigInt(r[3] ?? r.threshold),
+    collateralAmount: BigInt(r[4] ?? r.collateralAmount),
+    expiresAt: BigInt(r[5] ?? r.expiresAt),
+    active: Boolean(r[6] ?? r.active),
   };
 }
 
 /**
- * Get count of active (not expired, not cancelled) subscriptions.
+ * Get count of active subscriptions.
  */
 export async function getActiveCount(): Promise<bigint> {
   const result = await publicClient.readContract({
@@ -194,7 +207,7 @@ export async function getActiveCount(): Promise<bigint> {
 
 /**
  * Check the REACT balance of the Reactive Contract on Kopli.
- * Returns balance in wei. If the RC is underfunded, callbacks won't fire.
+ * If RC is underfunded, callbacks won't fire.
  */
 export async function getReactiveBalance(): Promise<bigint> {
   const rcAddress = getReactiveAddress();

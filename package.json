@@ -6,11 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server/index.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/server/index.ts",
-    "compile": "hardhat compile",
-    "deploy:callback": "hardhat run scripts/deploy-callback.ts --network base-sepolia",
-    "deploy:reactive": "hardhat run scripts/deploy-reactive.ts --network kopli",
-    "test": "hardhat test"
+    "dev": "ts-node-dev --respawn --transpile-only src/server/index.ts"
   },
   "dependencies": {
     "@x402/express": "^2.7.0",
@@ -24,11 +20,9 @@
     "zod": "^3.22.4"
   },
   "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@types/express": "^4.17.21",
     "@types/cors": "^2.8.17",
     "@types/node": "^20.11.5",
-    "hardhat": "^2.22.1",
     "ts-node": "^10.9.2",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.3"

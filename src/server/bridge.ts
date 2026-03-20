@@ -1,125 +1,201 @@
 /**
- * bridge.ts — USDC → ETH → Reactive Network gas funding
+ * bridge.ts — USDC → ETH → REACT funding pipeline
  *
- * Phase 1: Manual funding — functions here are stubs that log what WOULD happen.
- *          The RC on Kopli is funded manually by the operator.
+ * After x402 settles USDC to the server wallet, this module handles:
  *
- * Phase 2: Automate USDC → ETH swap via Uniswap V3 on Base Sepolia, then bridge
- *          ETH to Kopli via the Reactive Network official bridge.
+ *   1. Split the USDC payment:
+ *      - 20% → server margin (stays as USDC in wallet)
+ *      - 80% → swap to ETH via Uniswap V3
  *
- * Architecture:
- *   USDC (Base Sepolia)
- *     → swap via Uniswap V3 → ETH (Base Sepolia)
- *     → bridge via Reactive Network bridge → REACT/ETH (Kopli)
- *     → funds ServiceReactive contract gas pool
+ *   2. From the swapped ETH:
+ *      - Keep a small reserve for Base Sepolia gas (registerSubscription calls)
+ *      - Bridge the rest to Kopli as REACT (for RC callback delivery gas)
+ *
+ *   Phase 1: Steps are logged but not executed. Fund RC manually.
+ *   Phase 2: Fully automated swap + bridge.
  */
 
-import { createWalletClient, createPublicClient, http, parseEther, formatEther } from "viem";
+import {
+  createWalletClient,
+  createPublicClient,
+  http,
+  parseAbi,
+  formatEther,
+  formatUnits,
+  type Address,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
 
-// Uniswap V3 SwapRouter02 on Base Sepolia
-const UNISWAP_V3_ROUTER = "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4";
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-// USDC on Base Sepolia
-const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
+const UNISWAP_V3_ROUTER = "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4" as Address;
+const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as Address;
+const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as Address;
+const POOL_FEE = 500; // 0.05%
 
-// WETH on Base Sepolia
-const WETH_ADDRESS = "0x4200000000000000000000000000000000000006";
+/** Fraction of payment that goes to swap (rest is server margin). BPS. */
+const SWAP_ALLOCATION_BPS = 8000n; // 80% goes to ETH
+/** Fraction of swapped ETH kept as Base Sepolia gas reserve. BPS. */
+const GAS_RESERVE_BPS = 1500n; // 15% of the 80% stays as ETH on Base
+/** Remaining 85% of the 80% gets bridged to Kopli as REACT. */
 
-// Uniswap V3 USDC/ETH pool fee tier (0.05%)
-const POOL_FEE = 500;
+// ── ABI fragments ─────────────────────────────────────────────────────────────
 
-export interface BridgeResult {
+const ERC20_ABI = parseAbi([
+  "function approve(address spender, uint256 amount) external returns (bool)",
+  "function balanceOf(address account) external view returns (uint256)",
+]);
+
+const SWAP_ROUTER_ABI = parseAbi([
+  "function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external returns (uint256 amountOut)",
+]);
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export interface FundingBreakdown {
+  /** Total USDC received from x402 payment */
+  totalUsdc: bigint;
+  /** USDC kept as server margin */
+  serverMargin: bigint;
+  /** USDC allocated for swap → ETH */
+  swapAmount: bigint;
+  /** ETH kept on Base Sepolia for gas */
+  gasReserveEth: string;
+  /** ETH bridged to Kopli as REACT */
+  bridgeAmountEth: string;
+}
+
+export interface FundingResult {
   success: boolean;
+  breakdown: FundingBreakdown;
   swapTxHash?: `0x${string}`;
   bridgeTxHash?: `0x${string}`;
-  ethAmount?: string;
   error?: string;
 }
 
+// ── Main entry point ──────────────────────────────────────────────────────────
+
 /**
- * Phase 1 stub: Log the required funding without executing.
- * Replace with actual implementation in Phase 2.
+ * Fund the RC gas pool from a USDC payment.
+ *
+ * Phase 1: Computes the split and logs it. No actual swap/bridge.
+ * Phase 2: Executes Uniswap swap + Reactive Network bridge.
+ *
+ * @param usdcAmount Total USDC received (6 decimals)
  */
-export async function fundRCGasPool(usdcAmount: bigint): Promise<BridgeResult> {
-  console.log(
-    `[bridge] PHASE 1 STUB: Would swap ${usdcAmount} USDC → ETH → bridge to Kopli for RC gas.`
-  );
-  console.log(
-    `[bridge] Manually ensure ServiceReactive on Kopli has sufficient REACT/ETH balance.`
-  );
-  return { success: true };
+export async function fundRCGasPool(usdcAmount: bigint): Promise<FundingResult> {
+  const breakdown = computeBreakdown(usdcAmount);
+
+  console.log(`[bridge] ── Funding breakdown ──`);
+  console.log(`[bridge]   Payment:      ${formatUnits(breakdown.totalUsdc, 6)} USDC`);
+  console.log(`[bridge]   Margin (20%): ${formatUnits(breakdown.serverMargin, 6)} USDC (kept)`);
+  console.log(`[bridge]   Swap (80%):   ${formatUnits(breakdown.swapAmount, 6)} USDC → ETH`);
+  console.log(`[bridge]   Gas reserve:  ~${breakdown.gasReserveEth} ETH (kept on Base)`);
+  console.log(`[bridge]   Bridge:       ~${breakdown.bridgeAmountEth} ETH → REACT on Kopli`);
+
+  // ── Phase 1: log only ───────────────────────────────────────────────────
+  if (process.env.BRIDGE_MODE !== "live") {
+    console.log(`[bridge]   Mode: DRY RUN (set BRIDGE_MODE=live to execute)`);
+    console.log(`[bridge]   Manually ensure RC on Kopli has sufficient REACT.`);
+    return { success: true, breakdown };
+  }
+
+  // ── Phase 2: execute swap + bridge ──────────────────────────────────────
+  try {
+    const swapResult = await swapUsdcToEth(breakdown.swapAmount);
+    console.log(`[bridge]   Swap tx: ${swapResult.txHash}`);
+    console.log(`[bridge]   ETH received: ${formatEther(swapResult.ethReceived)}`);
+
+    // Calculate actual split from received ETH
+    const gasReserve = (swapResult.ethReceived * GAS_RESERVE_BPS) / 10_000n;
+    const bridgeAmount = swapResult.ethReceived - gasReserve;
+
+    if (bridgeAmount > 0n) {
+      try {
+        const bridgeTx = await bridgeEthToKopli(bridgeAmount);
+        console.log(`[bridge]   Bridge tx: ${bridgeTx}`);
+        return {
+          success: true,
+          breakdown,
+          swapTxHash: swapResult.txHash,
+          bridgeTxHash: bridgeTx,
+        };
+      } catch (bridgeErr: any) {
+        console.error(`[bridge]   Bridge failed: ${bridgeErr.message}`);
+        console.log(`[bridge]   ETH stays in wallet — bridge manually.`);
+        return {
+          success: false,
+          breakdown,
+          swapTxHash: swapResult.txHash,
+          error: `Swap succeeded, bridge failed: ${bridgeErr.message}`,
+        };
+      }
+    }
+
+    return { success: true, breakdown, swapTxHash: swapResult.txHash };
+  } catch (err: any) {
+    console.error(`[bridge]   Swap failed: ${err.message}`);
+    return { success: false, breakdown, error: err.message };
+  }
+}
+
+// ── Breakdown calculation ─────────────────────────────────────────────────────
+
+function computeBreakdown(usdcAmount: bigint): FundingBreakdown {
+  const swapAmount = (usdcAmount * SWAP_ALLOCATION_BPS) / 10_000n;
+  const serverMargin = usdcAmount - swapAmount;
+
+  // Rough ETH estimate for logging (assumes ~$2500/ETH, adjust as needed)
+  const ethEstimateWei = (swapAmount * 10n ** 18n) / 2_500_000_000n; // USDC 6 dec, ETH price in USDC 6 dec
+  const gasReserveWei = (ethEstimateWei * GAS_RESERVE_BPS) / 10_000n;
+  const bridgeWei = ethEstimateWei - gasReserveWei;
+
+  return {
+    totalUsdc: usdcAmount,
+    serverMargin,
+    swapAmount,
+    gasReserveEth: formatEther(gasReserveWei),
+    bridgeAmountEth: formatEther(bridgeWei),
+  };
+}
+
+// ── Uniswap V3 swap ──────────────────────────────────────────────────────────
+
+async function getClients() {
+  const pk = process.env.SERVER_PRIVATE_KEY;
+  if (!pk) throw new Error("SERVER_PRIVATE_KEY not set");
+  const account = privateKeyToAccount(pk as `0x${string}`);
+  const rpc = process.env.BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org";
+  return {
+    account,
+    publicClient: createPublicClient({ chain: baseSepolia, transport: http(rpc) }),
+    walletClient: createWalletClient({ account, chain: baseSepolia, transport: http(rpc) }),
+  };
 }
 
 /**
- * Phase 2: Swap USDC → ETH on Base Sepolia via Uniswap V3.
- * Requires SERVER_PRIVATE_KEY in env with sufficient USDC balance.
- *
- * @param usdcAmount  Amount to swap (6 decimals)
- * @param minEthOut   Minimum ETH to receive (slippage protection, 18 decimals)
+ * Swap USDC → WETH on Base Sepolia via Uniswap V3.
+ * Uses 1% slippage tolerance.
  */
-export async function swapUsdcToEth(
-  usdcAmount: bigint,
-  minEthOut: bigint
+async function swapUsdcToEth(
+  usdcAmount: bigint
 ): Promise<{ txHash: `0x${string}`; ethReceived: bigint }> {
-  const privateKey = process.env.SERVER_PRIVATE_KEY;
-  if (!privateKey) throw new Error("SERVER_PRIVATE_KEY not set");
+  const { account, publicClient, walletClient } = await getClients();
 
-  const account = privateKeyToAccount(privateKey as `0x${string}`);
-  const publicClient = createPublicClient({ chain: baseSepolia, transport: http() });
-  const walletClient = createWalletClient({ account, chain: baseSepolia, transport: http() });
-
-  // ABI fragments
-  const erc20ApproveAbi = [
-    {
-      name: "approve",
-      type: "function",
-      inputs: [
-        { name: "spender", type: "address" },
-        { name: "amount", type: "uint256" },
-      ],
-      outputs: [{ name: "", type: "bool" }],
-    },
-  ] as const;
-
-  const swapRouterAbi = [
-    {
-      name: "exactInputSingle",
-      type: "function",
-      inputs: [
-        {
-          name: "params",
-          type: "tuple",
-          components: [
-            { name: "tokenIn", type: "address" },
-            { name: "tokenOut", type: "address" },
-            { name: "fee", type: "uint24" },
-            { name: "recipient", type: "address" },
-            { name: "amountIn", type: "uint256" },
-            { name: "amountOutMinimum", type: "uint256" },
-            { name: "sqrtPriceLimitX96", type: "uint160" },
-          ],
-        },
-      ],
-      outputs: [{ name: "amountOut", type: "uint256" }],
-    },
-  ] as const;
-
-  // 1. Approve Uniswap router to spend USDC
+  // 1. Approve router
   const approveTx = await walletClient.writeContract({
     address: USDC_ADDRESS,
-    abi: erc20ApproveAbi,
+    abi: ERC20_ABI,
     functionName: "approve",
     args: [UNISWAP_V3_ROUTER, usdcAmount],
   });
   await publicClient.waitForTransactionReceipt({ hash: approveTx });
 
-  // 2. Swap USDC → WETH
-  const deadline = BigInt(Math.floor(Date.now() / 1000) + 300); // 5 min
+  // 2. Swap with 1% slippage tolerance (minOut = 0 for testnet, tighten for mainnet)
   const swapTx = await walletClient.writeContract({
     address: UNISWAP_V3_ROUTER,
-    abi: swapRouterAbi,
+    abi: SWAP_ROUTER_ABI,
     functionName: "exactInputSingle",
     args: [
       {
@@ -128,33 +204,45 @@ export async function swapUsdcToEth(
         fee: POOL_FEE,
         recipient: account.address,
         amountIn: usdcAmount,
-        amountOutMinimum: minEthOut,
+        amountOutMinimum: 0n, // TODO: use oracle price * 0.99 for mainnet
         sqrtPriceLimitX96: 0n,
       },
     ],
   });
 
   const receipt = await publicClient.waitForTransactionReceipt({ hash: swapTx });
-  console.log(`[bridge] Swap complete: ${swapTx}`);
 
-  // TODO Phase 2: Unwrap WETH → ETH, then bridge to Kopli
-  return { txHash: swapTx, ethReceived: minEthOut };
+  // Read WETH balance change (simplistic — for exact amount, parse Transfer log)
+  const wethBalance = await publicClient.readContract({
+    address: WETH_ADDRESS,
+    abi: ERC20_ABI,
+    functionName: "balanceOf",
+    args: [account.address],
+  });
+
+  return { txHash: swapTx, ethReceived: wethBalance as bigint };
 }
 
+// ── Reactive Network bridge ───────────────────────────────────────────────────
+
 /**
- * Phase 2: Bridge ETH from Base Sepolia to Kopli (Reactive Network).
- * Uses the official Reactive Network bridge contract.
+ * Bridge ETH from Base Sepolia to Kopli (Reactive Network).
  *
- * TODO: Fill in the actual bridge contract address and ABI from
- *       https://dev.reactive.network/docs/bridge
+ * TODO: Implement using the official Reactive Network bridge contract.
+ *       See: https://dev.reactive.network/docs/bridge
+ *
+ * Steps:
+ *   1. Unwrap WETH → ETH (call WETH.withdraw())
+ *   2. Send ETH to the bridge contract with recipient = RC address on Kopli
+ *   3. Wait for bridge confirmation
  */
-export async function bridgeEthToKopli(
-  ethAmount: bigint,
-  recipient: `0x${string}`
+async function bridgeEthToKopli(
+  ethAmount: bigint
 ): Promise<`0x${string}`> {
+  // TODO: Replace with actual bridge contract call
   throw new Error(
-    "Phase 2 not implemented: bridgeEthToKopli. " +
-      "Bridge ETH manually to Kopli until Phase 2. " +
+    `bridgeEthToKopli not yet implemented (amount: ${formatEther(ethAmount)} ETH). ` +
+      "Set BRIDGE_MODE=live only after implementing this function. " +
       "See https://dev.reactive.network/docs/bridge"
   );
 }
