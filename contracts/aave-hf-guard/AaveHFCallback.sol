@@ -93,7 +93,12 @@ contract AaveHFCallback {
 
     event CycleCompleted(uint256 checked, uint256 triggered, uint256 expired);
 
+    event Paused(address indexed by);
+    event Unpaused(address indexed by);
+
     // ── Modifiers ─────────────────────────────────────────────────────────────
+    bool public paused;
+
     modifier onlyOwner() {
         require(msg.sender == owner, "Not owner");
         _;
@@ -104,6 +109,11 @@ contract AaveHFCallback {
             msg.sender == reactiveNetworkSender || msg.sender == owner,
             "Not authorized"
         );
+        _;
+    }
+
+    modifier whenNotPaused() {
+        require(!paused, "Service paused");
         _;
     }
 
@@ -128,7 +138,7 @@ contract AaveHFCallback {
         uint256 threshold,
         uint256 collateralAmount,
         uint256 duration
-    ) external onlyOwner returns (uint256 id) {
+    ) external onlyOwner whenNotPaused returns (uint256 id) {
         require(agent != address(0), "Zero agent");
         require(protectedUser != address(0), "Zero user");
         require(collateralAsset != address(0), "Zero asset");
@@ -170,14 +180,14 @@ contract AaveHFCallback {
     /// @dev    Iterates backwards so swap-and-pop doesn't skip elements.
     ///         Each Aave call is wrapped in try-catch — one reverting user
     ///         cannot block checks for all other users.
-    function runCycle() external onlyAuthorized {
+    function runCycle() external onlyAuthorized whenNotPaused {
         uint256 checked;
         uint256 triggered;
         uint256 expired;
 
         uint256 i = activeIds.length;
         while (i > 0) {
-            i--;
+            unchecked { i--; } // safe: i > 0 checked above
             uint256 subId = activeIds[i];
             Subscription storage sub = subscriptions[subId];
 
@@ -195,8 +205,8 @@ contract AaveHFCallback {
             {
                 checked++;
 
-                // type(uint256).max = no borrows (safe), 0 = unexpected
-                if (hf == type(uint256).max || hf == 0) continue;
+                // type(uint256).max = no borrows (fully safe) — skip
+                if (hf == type(uint256).max) continue;
 
                 if (hf < sub.threshold) {
                     bool ok = _executeProtection(sub);
@@ -239,15 +249,22 @@ contract AaveHFCallback {
         }
 
         // Supply to Aave on behalf of the protected user
-        token.approve(AAVE_POOL, sub.collateralAmount);
-        IAavePool(AAVE_POOL).supply(
+        // Wrapped in try-catch: Aave could be paused, asset frozen, etc.
+        try token.approve(AAVE_POOL, sub.collateralAmount) {} catch { return false; }
+
+        try IAavePool(AAVE_POOL).supply(
             sub.collateralAsset,
             sub.collateralAmount,
             sub.protectedUser,
             0
-        );
-
-        return true;
+        ) {
+            return true;
+        } catch {
+            // Aave supply failed — collateral is already in this contract.
+            // Transfer it back to the agent so they don't lose funds.
+            try token.transferFrom(address(this), sub.agent, sub.collateralAmount) {} catch {}
+            return false;
+        }
     }
 
     /// @dev Swap-and-pop: move the last element into `index`, then pop.
@@ -278,6 +295,17 @@ contract AaveHFCallback {
     }
 
     // ── Admin ─────────────────────────────────────────────────────────────────
+
+    /// @notice Emergency pause — stops new registrations and cycles.
+    function pause() external onlyOwner {
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    function unpause() external onlyOwner {
+        paused = false;
+        emit Unpaused(msg.sender);
+    }
 
     function updateReactiveNetworkSender(address newSender) external onlyOwner {
         reactiveNetworkSender = newSender;

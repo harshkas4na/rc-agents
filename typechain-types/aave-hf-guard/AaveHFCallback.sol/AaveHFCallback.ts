@@ -64,11 +64,14 @@ export interface AaveHFCallbackInterface extends Interface {
       | "getSubscription"
       | "nextId"
       | "owner"
+      | "pause"
+      | "paused"
       | "reactiveNetworkSender"
       | "register"
       | "runCycle"
       | "subscriptions"
       | "transferOwnership"
+      | "unpause"
       | "updateReactiveNetworkSender"
   ): FunctionFragment;
 
@@ -76,9 +79,11 @@ export interface AaveHFCallbackInterface extends Interface {
     nameOrSignatureOrTopic:
       | "CycleCompleted"
       | "HealthCheckFailed"
+      | "Paused"
       | "ProtectionTriggered"
       | "SubscriptionExpired"
       | "SubscriptionRegistered"
+      | "Unpaused"
   ): EventFragment;
 
   encodeFunctionData(functionFragment: "AAVE_POOL", values?: undefined): string;
@@ -104,6 +109,8 @@ export interface AaveHFCallbackInterface extends Interface {
   ): string;
   encodeFunctionData(functionFragment: "nextId", values?: undefined): string;
   encodeFunctionData(functionFragment: "owner", values?: undefined): string;
+  encodeFunctionData(functionFragment: "pause", values?: undefined): string;
+  encodeFunctionData(functionFragment: "paused", values?: undefined): string;
   encodeFunctionData(
     functionFragment: "reactiveNetworkSender",
     values?: undefined
@@ -128,6 +135,7 @@ export interface AaveHFCallbackInterface extends Interface {
     functionFragment: "transferOwnership",
     values: [AddressLike]
   ): string;
+  encodeFunctionData(functionFragment: "unpause", values?: undefined): string;
   encodeFunctionData(
     functionFragment: "updateReactiveNetworkSender",
     values: [AddressLike]
@@ -153,6 +161,8 @@ export interface AaveHFCallbackInterface extends Interface {
   ): Result;
   decodeFunctionResult(functionFragment: "nextId", data: BytesLike): Result;
   decodeFunctionResult(functionFragment: "owner", data: BytesLike): Result;
+  decodeFunctionResult(functionFragment: "pause", data: BytesLike): Result;
+  decodeFunctionResult(functionFragment: "paused", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "reactiveNetworkSender",
     data: BytesLike
@@ -167,6 +177,7 @@ export interface AaveHFCallbackInterface extends Interface {
     functionFragment: "transferOwnership",
     data: BytesLike
   ): Result;
+  decodeFunctionResult(functionFragment: "unpause", data: BytesLike): Result;
   decodeFunctionResult(
     functionFragment: "updateReactiveNetworkSender",
     data: BytesLike
@@ -201,6 +212,18 @@ export namespace HealthCheckFailedEvent {
   export interface OutputObject {
     id: bigint;
     protectedUser: string;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace PausedEvent {
+  export type InputTuple = [by: AddressLike];
+  export type OutputTuple = [by: string];
+  export interface OutputObject {
+    by: string;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -263,6 +286,18 @@ export namespace SubscriptionRegisteredEvent {
     protectedUser: string;
     threshold: bigint;
     expiresAt: bigint;
+  }
+  export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
+  export type Filter = TypedDeferredTopicFilter<Event>;
+  export type Log = TypedEventLog<Event>;
+  export type LogDescription = TypedLogDescription<Event>;
+}
+
+export namespace UnpausedEvent {
+  export type InputTuple = [by: AddressLike];
+  export type OutputTuple = [by: string];
+  export interface OutputObject {
+    by: string;
   }
   export type Event = TypedContractEvent<InputTuple, OutputTuple, OutputObject>;
   export type Filter = TypedDeferredTopicFilter<Event>;
@@ -337,6 +372,10 @@ export interface AaveHFCallback extends BaseContract {
 
   owner: TypedContractMethod<[], [string], "view">;
 
+  pause: TypedContractMethod<[], [void], "nonpayable">;
+
+  paused: TypedContractMethod<[], [boolean], "view">;
+
   reactiveNetworkSender: TypedContractMethod<[], [string], "view">;
 
   register: TypedContractMethod<
@@ -376,6 +415,8 @@ export interface AaveHFCallback extends BaseContract {
     "nonpayable"
   >;
 
+  unpause: TypedContractMethod<[], [void], "nonpayable">;
+
   updateReactiveNetworkSender: TypedContractMethod<
     [newSender: AddressLike],
     [void],
@@ -414,6 +455,12 @@ export interface AaveHFCallback extends BaseContract {
   getFunction(
     nameOrSignature: "owner"
   ): TypedContractMethod<[], [string], "view">;
+  getFunction(
+    nameOrSignature: "pause"
+  ): TypedContractMethod<[], [void], "nonpayable">;
+  getFunction(
+    nameOrSignature: "paused"
+  ): TypedContractMethod<[], [boolean], "view">;
   getFunction(
     nameOrSignature: "reactiveNetworkSender"
   ): TypedContractMethod<[], [string], "view">;
@@ -455,6 +502,9 @@ export interface AaveHFCallback extends BaseContract {
     nameOrSignature: "transferOwnership"
   ): TypedContractMethod<[newOwner: AddressLike], [void], "nonpayable">;
   getFunction(
+    nameOrSignature: "unpause"
+  ): TypedContractMethod<[], [void], "nonpayable">;
+  getFunction(
     nameOrSignature: "updateReactiveNetworkSender"
   ): TypedContractMethod<[newSender: AddressLike], [void], "nonpayable">;
 
@@ -471,6 +521,13 @@ export interface AaveHFCallback extends BaseContract {
     HealthCheckFailedEvent.InputTuple,
     HealthCheckFailedEvent.OutputTuple,
     HealthCheckFailedEvent.OutputObject
+  >;
+  getEvent(
+    key: "Paused"
+  ): TypedContractEvent<
+    PausedEvent.InputTuple,
+    PausedEvent.OutputTuple,
+    PausedEvent.OutputObject
   >;
   getEvent(
     key: "ProtectionTriggered"
@@ -492,6 +549,13 @@ export interface AaveHFCallback extends BaseContract {
     SubscriptionRegisteredEvent.InputTuple,
     SubscriptionRegisteredEvent.OutputTuple,
     SubscriptionRegisteredEvent.OutputObject
+  >;
+  getEvent(
+    key: "Unpaused"
+  ): TypedContractEvent<
+    UnpausedEvent.InputTuple,
+    UnpausedEvent.OutputTuple,
+    UnpausedEvent.OutputObject
   >;
 
   filters: {
@@ -515,6 +579,17 @@ export interface AaveHFCallback extends BaseContract {
       HealthCheckFailedEvent.InputTuple,
       HealthCheckFailedEvent.OutputTuple,
       HealthCheckFailedEvent.OutputObject
+    >;
+
+    "Paused(address)": TypedContractEvent<
+      PausedEvent.InputTuple,
+      PausedEvent.OutputTuple,
+      PausedEvent.OutputObject
+    >;
+    Paused: TypedContractEvent<
+      PausedEvent.InputTuple,
+      PausedEvent.OutputTuple,
+      PausedEvent.OutputObject
     >;
 
     "ProtectionTriggered(uint256,address,uint256)": TypedContractEvent<
@@ -548,6 +623,17 @@ export interface AaveHFCallback extends BaseContract {
       SubscriptionRegisteredEvent.InputTuple,
       SubscriptionRegisteredEvent.OutputTuple,
       SubscriptionRegisteredEvent.OutputObject
+    >;
+
+    "Unpaused(address)": TypedContractEvent<
+      UnpausedEvent.InputTuple,
+      UnpausedEvent.OutputTuple,
+      UnpausedEvent.OutputObject
+    >;
+    Unpaused: TypedContractEvent<
+      UnpausedEvent.InputTuple,
+      UnpausedEvent.OutputTuple,
+      UnpausedEvent.OutputObject
     >;
   };
 }
