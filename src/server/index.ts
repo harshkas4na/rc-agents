@@ -494,14 +494,15 @@ app.get("/health", async (_req: Request, res: Response) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-const PORT = parseInt(process.env.PORT ?? "3000", 10);
-
-app.listen(PORT, () => {
-  console.log(`[server] Listening on :${PORT}`);
-  console.log(`[server] Facilitator: ${FACILITATOR_URL}`);
-  console.log(`[server] Recipient:   ${PAYMENT_RECIPIENT}`);
-  console.log(`[server] Callback:    ${process.env.AAVE_PROTECTION_CALLBACK_ADDRESS ?? "NOT SET"}`);
-  console.log(`[server] Reactive:    ${process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? "NOT SET"}`);
-});
+if (process.env.VERCEL !== "1") {
+  const PORT = parseInt(process.env.PORT ?? "3000", 10);
+  app.listen(PORT, () => {
+    console.log(`[server] Listening on :${PORT}`);
+    console.log(`[server] Facilitator: ${FACILITATOR_URL}`);
+    console.log(`[server] Recipient:   ${PAYMENT_RECIPIENT}`);
+    console.log(`[server] Callback:    ${process.env.AAVE_PROTECTION_CALLBACK_ADDRESS ?? "NOT SET"}`);
+    console.log(`[server] Reactive:    ${process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? "NOT SET"}`);
+  });
+}
 
 export default app;
