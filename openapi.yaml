@@ -42,6 +42,8 @@ info:
     - AaveProtectionReactive (Lasna): `0xb1d20ecA7e6e6998A985C41Ae69695125F67619D`
 
 servers:
+  - url: https://rc-agents.vercel.app
+    description: Production server
   - url: http://localhost:3000
     description: Local development server
 
