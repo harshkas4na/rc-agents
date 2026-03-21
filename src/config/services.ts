@@ -1,6 +1,6 @@
 // ── Service Catalog ───────────────────────────────────────────────────────────
 // One entry per deployed service. Each maps to its own specialized contract pair.
-// Prices are in USDC base units (6 decimals). $0.10 = 100_000.
+// Prices are in USDC base units (6 decimals). $0.25 = 250_000.
 
 export interface ServiceDefinition {
   id: string;
@@ -21,19 +21,20 @@ export interface ServiceDefinition {
 }
 
 export const SERVICES: Record<string, ServiceDefinition> = {
-  "hf-guard": {
-    id: "hf-guard",
-    name: "Aave Liquidation Guard",
+  "aave-protection": {
+    id: "aave-protection",
+    name: "Aave Liquidation Protection",
     description:
-      "Monitors your Aave health factor and automatically supplies collateral " +
-      "when it drops below your chosen threshold. Prevents liquidation.",
+      "Advanced Aave liquidation protection with collateral deposit, debt repayment, " +
+      "or both. Monitors health factor and automatically acts when it drops below " +
+      "your chosen threshold. Supports multi-config management (create/pause/resume/cancel).",
     trigger: "Aave Health Factor < threshold",
-    action: "Supply collateral to Aave on your behalf",
-    pricePerDay: 100_000, // $0.10 / day
+    action: "Supply collateral, repay debt, or both on your behalf",
+    pricePerDay: 250_000, // $0.25 / day
     minDuration: 3_600,   // 1 hour
     maxDuration: 2_592_000, // 30 days
-    callbackAddressEnv: "AAVE_HF_CALLBACK_ADDRESS",
-    reactiveAddressEnv: "AAVE_HF_REACTIVE_ADDRESS",
+    callbackAddressEnv: "AAVE_PROTECTION_CALLBACK_ADDRESS",
+    reactiveAddressEnv: "AAVE_PROTECTION_REACTIVE_ADDRESS",
   },
   // Future services get their own contract pairs and entries here:
   // "stop-loss": { ... callbackAddressEnv: "STOP_LOSS_CALLBACK_ADDRESS", ... },
@@ -81,7 +82,7 @@ export function formatUsdc(baseUnits: bigint): string {
 
 export const CHAIN = {
   BASE_SEPOLIA: { id: 84532, caip2: "eip155:84532" },
-  KOPLI: { id: 5318008, caip2: "eip155:5318008" },
+  LASNA: { id: 5318007, caip2: "eip155:5318007" },
 } as const;
 
 export const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;

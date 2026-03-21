@@ -2,13 +2,13 @@
  * chain.ts — viem clients and contract interactions.
  *
  * All on-chain writes use the server wallet (SERVER_PRIVATE_KEY).
- * The server wallet must be the `owner` of AaveHFCallback.
+ * The server wallet must be the `owner` of AaveProtectionCallback.
  *
  * Flow:
  *   1. Agent pays via x402 → server receives USDC
- *   2. Server calls registerSubscription() → writes to CC on Base Sepolia
- *   3. CC emits SubscriptionRegistered → RC picks it up on Kopli
- *   4. RC fires runCycle() callbacks via CRON → CC checks HF + acts
+ *   2. Server calls createProtectionConfig() → writes to CC on Base Sepolia
+ *   3. CC emits ProtectionConfigured → RC picks it up on Lasna (Reactive Network)
+ *   4. RC fires checkAndProtectPositions() callbacks via CRON → CC checks HF + acts
  */
 
 import {
@@ -17,30 +17,29 @@ import {
   http,
   keccak256,
   toHex,
-  decodeEventLog,
   type Address,
   type Hash,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { AAVE_HF_CALLBACK_ABI } from "../abis/aave-hf-callback.js";
+import { AAVE_PROTECTION_CALLBACK_ABI } from "../abis/aave-protection-callback.js";
 import { CONTRACTS } from "../config/contracts.js";
 
-// ── Kopli chain definition (not in viem's built-in chains) ────────────────────
+// ── Lasna chain definition (Reactive Network testnet, not in viem built-ins) ──
 
-export const kopliChain = {
-  id: 5_318_008,
-  name: "Kopli Testnet",
+export const lasnaChain = {
+  id: 5_318_007,
+  name: "Lasna Testnet",
   nativeCurrency: { name: "REACT", symbol: "REACT", decimals: 18 },
   rpcUrls: {
-    default: { http: ["https://kopli-rpc.rkt.ink"] },
+    default: { http: ["https://lasna-rpc.rnk.dev/"] },
   },
 } as const;
 
 // ── Event selector for log parsing ────────────────────────────────────────────
 
-const SUBSCRIPTION_REGISTERED_SELECTOR = keccak256(
-  toHex("SubscriptionRegistered(uint256,address,address,uint256,uint256)")
+const PROTECTION_CONFIGURED_SELECTOR = keccak256(
+  toHex("ProtectionConfigured(uint256,uint8,uint256,uint256,address,address)")
 );
 
 // ── Client setup ──────────────────────────────────────────────────────────────
@@ -56,9 +55,9 @@ export const publicClient = createPublicClient({
   transport: http(process.env.BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org"),
 });
 
-export const kopliClient = createPublicClient({
-  chain: kopliChain,
-  transport: http(process.env.KOPLI_RPC_URL ?? "https://kopli-rpc.rkt.ink"),
+export const lasnaClient = createPublicClient({
+  chain: lasnaChain,
+  transport: http(process.env.LASNA_RPC_URL ?? "https://lasna-rpc.rnk.dev/"),
 });
 
 export function getWalletClient() {
@@ -70,64 +69,66 @@ export function getWalletClient() {
 }
 
 function getCallbackAddress(): Address {
-  const addr = CONTRACTS.aaveHFCallback;
+  const addr = CONTRACTS.aaveProtectionCallback;
   if (!addr || (addr as string) === "") {
-    throw new Error("AAVE_HF_CALLBACK_ADDRESS not set in .env");
+    throw new Error("AAVE_PROTECTION_CALLBACK_ADDRESS not set in .env");
   }
   return addr;
 }
 
 function getReactiveAddress(): Address {
-  const addr = CONTRACTS.aaveHFReactive;
+  const addr = CONTRACTS.aaveProtectionReactive;
   if (!addr || (addr as string) === "") {
-    throw new Error("AAVE_HF_REACTIVE_ADDRESS not set in .env");
+    throw new Error("AAVE_PROTECTION_REACTIVE_ADDRESS not set in .env");
   }
   return addr;
 }
 
 // ── Contract helpers ──────────────────────────────────────────────────────────
 
-export interface RegisterParams {
-  agent: Address;
+export interface CreateProtectionParams {
   protectedUser: Address;
-  collateralAsset: Address;
+  /** 0 = COLLATERAL_DEPOSIT, 1 = DEBT_REPAYMENT, 2 = BOTH */
+  protectionType: number;
   /** HF threshold in WAD (1.5 HF → 1_500_000_000_000_000_000n) */
-  threshold: bigint;
-  /** Collateral amount in token base units */
-  collateralAmount: bigint;
-  /** Duration in seconds */
-  duration: bigint;
+  healthFactorThreshold: bigint;
+  /** Target HF in WAD (2.0 HF → 2_000_000_000_000_000_000n) */
+  targetHealthFactor: bigint;
+  collateralAsset: Address;
+  debtAsset: Address;
+  preferDebtRepayment: boolean;
 }
 
 /**
- * Register an HF guard subscription on AaveHFCallback.
+ * Create a protection config on AaveProtectionCallback.
  *
  * Called by the server after x402 payment is confirmed.
- * The CC's register() is owner-only — the server wallet must be the CC owner.
+ * The CC's createProtectionConfig() is owner-only — the server wallet must be the CC owner.
  *
- * Returns the subscription ID parsed from the SubscriptionRegistered event.
+ * Returns the config ID parsed from the ProtectionConfigured event.
  */
-export async function registerSubscription(
-  params: RegisterParams
-): Promise<{ subscriptionId: bigint; txHash: Hash }> {
+export async function createProtectionConfig(
+  params: CreateProtectionParams
+): Promise<{ configId: bigint; txHash: Hash }> {
   const walletClient = getWalletClient();
   const callbackAddress = getCallbackAddress();
 
-  console.log(`[chain] Registering subscription on ${callbackAddress}...`);
-  console.log(`[chain]   agent=${params.agent} user=${params.protectedUser}`);
-  console.log(`[chain]   threshold=${params.threshold} duration=${params.duration}s`);
+  console.log(`[chain] Creating protection config on ${callbackAddress}...`);
+  console.log(`[chain]   protectedUser=${params.protectedUser}`);
+  console.log(`[chain]   type=${params.protectionType} threshold=${params.healthFactorThreshold}`);
 
   const txHash = await walletClient.writeContract({
     address: callbackAddress,
-    abi: AAVE_HF_CALLBACK_ABI,
-    functionName: "register",
+    abi: AAVE_PROTECTION_CALLBACK_ABI,
+    functionName: "createProtectionConfig",
     args: [
-      params.agent,
       params.protectedUser,
+      params.protectionType,
+      params.healthFactorThreshold,
+      params.targetHealthFactor,
       params.collateralAsset,
-      params.threshold,
-      params.collateralAmount,
-      params.duration,
+      params.debtAsset,
+      params.preferDebtRepayment,
     ],
   });
 
@@ -135,83 +136,159 @@ export async function registerSubscription(
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
   console.log(`[chain] Tx confirmed in block ${receipt.blockNumber}`);
 
-  // Find the SubscriptionRegistered log by matching topic[0]
-  const registeredLog = receipt.logs.find(
+  // Find the ProtectionConfigured log by matching topic[0]
+  const configuredLog = receipt.logs.find(
     (log) =>
       log.address.toLowerCase() === callbackAddress.toLowerCase() &&
-      log.topics[0] === SUBSCRIPTION_REGISTERED_SELECTOR
+      log.topics[0] === PROTECTION_CONFIGURED_SELECTOR
   );
 
-  if (!registeredLog || !registeredLog.topics[1]) {
+  if (!configuredLog || !configuredLog.topics[1]) {
     throw new Error(
-      `SubscriptionRegistered event not found in tx ${txHash}. ` +
+      `ProtectionConfigured event not found in tx ${txHash}. ` +
         `This likely means the CC ABI doesn't match the deployed contract. ` +
         `Logs found: ${receipt.logs.length}`
     );
   }
 
-  // topic[1] = indexed id (uint256)
-  const subscriptionId = BigInt(registeredLog.topics[1]);
-  console.log(`[chain] Subscription #${subscriptionId} registered`);
+  // topic[1] = indexed configId (uint256)
+  const configId = BigInt(configuredLog.topics[1]);
+  console.log(`[chain] Protection config #${configId} created`);
 
-  return { subscriptionId, txHash };
+  return { configId, txHash };
+}
+
+// ── Config management ─────────────────────────────────────────────────────────
+
+export async function pauseProtectionConfig(configId: bigint): Promise<Hash> {
+  const walletClient = getWalletClient();
+  const callbackAddress = getCallbackAddress();
+
+  const txHash = await walletClient.writeContract({
+    address: callbackAddress,
+    abi: AAVE_PROTECTION_CALLBACK_ABI,
+    functionName: "pauseProtectionConfig",
+    args: [configId],
+  });
+
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  console.log(`[chain] Config #${configId} paused (tx: ${txHash})`);
+  return txHash;
+}
+
+export async function resumeProtectionConfig(configId: bigint): Promise<Hash> {
+  const walletClient = getWalletClient();
+  const callbackAddress = getCallbackAddress();
+
+  const txHash = await walletClient.writeContract({
+    address: callbackAddress,
+    abi: AAVE_PROTECTION_CALLBACK_ABI,
+    functionName: "resumeProtectionConfig",
+    args: [configId],
+  });
+
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  console.log(`[chain] Config #${configId} resumed (tx: ${txHash})`);
+  return txHash;
+}
+
+export async function cancelProtectionConfig(configId: bigint): Promise<Hash> {
+  const walletClient = getWalletClient();
+  const callbackAddress = getCallbackAddress();
+
+  const txHash = await walletClient.writeContract({
+    address: callbackAddress,
+    abi: AAVE_PROTECTION_CALLBACK_ABI,
+    functionName: "cancelProtectionConfig",
+    args: [configId],
+  });
+
+  await publicClient.waitForTransactionReceipt({ hash: txHash });
+  console.log(`[chain] Config #${configId} cancelled (tx: ${txHash})`);
+  return txHash;
 }
 
 // ── Read helpers ──────────────────────────────────────────────────────────────
 
-export interface SubscriptionData {
-  agent: string;
+export interface ProtectionConfigData {
+  id: bigint;
   protectedUser: string;
+  protectionType: number;
+  healthFactorThreshold: bigint;
+  targetHealthFactor: bigint;
   collateralAsset: string;
-  threshold: bigint;
-  collateralAmount: bigint;
-  expiresAt: bigint;
-  active: boolean;
+  debtAsset: string;
+  preferDebtRepayment: boolean;
+  status: number;
+  createdAt: bigint;
+  lastExecutedAt: bigint;
+  executionCount: number;
+  consecutiveFailures: number;
+  lastExecutionAttempt: bigint;
 }
 
 /**
- * Fetch a subscription from on-chain state.
+ * Fetch a protection config from on-chain state.
  */
-export async function getSubscription(subscriptionId: bigint): Promise<SubscriptionData> {
+export async function getProtectionConfig(configId: bigint): Promise<ProtectionConfigData> {
   const result = await publicClient.readContract({
     address: getCallbackAddress(),
-    abi: AAVE_HF_CALLBACK_ABI,
-    functionName: "getSubscription",
-    args: [subscriptionId],
+    abi: AAVE_PROTECTION_CALLBACK_ABI,
+    functionName: "protectionConfigs",
+    args: [configId],
   });
 
-  // viem returns a tuple for multi-return functions
   const r = result as any;
   return {
-    agent: r[0] ?? r.agent,
+    id: BigInt(r[0] ?? r.id),
     protectedUser: r[1] ?? r.protectedUser,
-    collateralAsset: r[2] ?? r.collateralAsset,
-    threshold: BigInt(r[3] ?? r.threshold),
-    collateralAmount: BigInt(r[4] ?? r.collateralAmount),
-    expiresAt: BigInt(r[5] ?? r.expiresAt),
-    active: Boolean(r[6] ?? r.active),
+    protectionType: Number(r[2] ?? r.protectionType),
+    healthFactorThreshold: BigInt(r[3] ?? r.healthFactorThreshold),
+    targetHealthFactor: BigInt(r[4] ?? r.targetHealthFactor),
+    collateralAsset: r[5] ?? r.collateralAsset,
+    debtAsset: r[6] ?? r.debtAsset,
+    preferDebtRepayment: Boolean(r[7] ?? r.preferDebtRepayment),
+    status: Number(r[8] ?? r.status),
+    createdAt: BigInt(r[9] ?? r.createdAt),
+    lastExecutedAt: BigInt(r[10] ?? r.lastExecutedAt),
+    executionCount: Number(r[11] ?? r.executionCount),
+    consecutiveFailures: Number(r[12] ?? r.consecutiveFailures),
+    lastExecutionAttempt: BigInt(r[13] ?? r.lastExecutionAttempt),
   };
 }
 
 /**
- * Get count of active subscriptions.
+ * Get all active config IDs.
  */
-export async function getActiveCount(): Promise<bigint> {
+export async function getActiveConfigs(): Promise<bigint[]> {
   const result = await publicClient.readContract({
     address: getCallbackAddress(),
-    abi: AAVE_HF_CALLBACK_ABI,
-    functionName: "activeSubscriptionCount",
+    abi: AAVE_PROTECTION_CALLBACK_ABI,
+    functionName: "getActiveConfigs",
+  });
+  return (result as any[]).map((id: any) => BigInt(id));
+}
+
+/**
+ * Get current health factor for a user from the CC.
+ */
+export async function getHealthFactor(userAddress: Address): Promise<bigint> {
+  const result = await publicClient.readContract({
+    address: getCallbackAddress(),
+    abi: AAVE_PROTECTION_CALLBACK_ABI,
+    functionName: "getCurrentHealthFactor",
+    args: [userAddress],
   });
   return BigInt(result as any);
 }
 
 /**
- * Check the REACT balance of the Reactive Contract on Kopli.
+ * Check the REACT balance of the Reactive Contract on Lasna.
  * If RC is underfunded, callbacks won't fire.
  */
 export async function getReactiveBalance(): Promise<bigint> {
   const rcAddress = getReactiveAddress();
-  return kopliClient.getBalance({ address: rcAddress });
+  return lasnaClient.getBalance({ address: rcAddress });
 }
 
 /** Minimum REACT balance (0.01 REACT) below which we refuse new registrations. */

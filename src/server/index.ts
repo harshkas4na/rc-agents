@@ -2,11 +2,16 @@
  * index.ts — x402 Aave Protection API
  *
  * Endpoints:
- *   GET  /api/services                → service catalog + pricing (free)
- *   POST /api/quote                   → exact price estimate (free)
- *   GET  /api/protect/liquidation     → [402-gated] register Aave HF guard
- *   GET  /api/status/:subscriptionId  → subscription status (free)
- *   GET  /health                      → server health (free)
+ *   GET  /api/services                         → service catalog + pricing (free)
+ *   POST /api/quote                            → exact price estimate (free)
+ *   POST /api/protect/liquidation              → [402-gated] create protection config
+ *   POST /api/protect/liquidation/pause        → pause a config (free)
+ *   POST /api/protect/liquidation/resume       → resume a config (free)
+ *   POST /api/protect/liquidation/cancel       → cancel a config (free)
+ *   GET  /api/status/config/:configId          → config details (free)
+ *   GET  /api/status/health/:userAddress       → health factor (free)
+ *   GET  /api/status/configs                   → all active configs (free)
+ *   GET  /health                               → server health (free)
  */
 
 import "dotenv/config";
@@ -23,15 +28,21 @@ import {
   computePrice,
   formatUsdc,
   WETH_BASE_SEPOLIA,
+  USDC_BASE_SEPOLIA,
 } from "../config/services.js";
 import {
-  registerSubscription,
-  getSubscription,
-  getActiveCount,
+  createProtectionConfig,
+  pauseProtectionConfig,
+  resumeProtectionConfig,
+  cancelProtectionConfig,
+  getProtectionConfig,
+  getActiveConfigs,
+  getHealthFactor,
   getReactiveBalance,
   MIN_RC_BALANCE,
 } from "./chain.js";
 import { fundRCGasPool } from "./bridge.js";
+import type { Address } from "viem";
 
 const app = express();
 app.use(helmet());
@@ -56,21 +67,22 @@ const resourceServer = new x402ResourceServer(facilitatorClient)
   .register(NETWORK, new ExactEvmScheme());
 
 const routes: RoutesConfig = {
-  "GET /api/protect/liquidation": {
+  "POST /api/protect/liquidation": {
     accepts: {
       scheme: "exact",
       network: NETWORK,
       payTo: PAYMENT_RECIPIENT,
-      // Dynamic pricing: compute from query params at request time
       price: async (context: any) => {
-        const params = context.adapter?.getQueryParams?.() ?? {};
-        const duration = parseInt((params.duration as string) ?? "86400", 10);
+        // Dynamic pricing: try to parse duration from request body
+        // Default to 1 day if not available at pricing time
+        const body = context.adapter?.getBody?.() ?? {};
+        const duration = parseInt(body.duration ?? "86400", 10);
         const clampedDuration = Math.max(3600, Math.min(2592000, isNaN(duration) ? 86400 : duration));
-        const priceBaseUnits = computePrice("hf-guard", clampedDuration);
+        const priceBaseUnits = computePrice("aave-protection", clampedDuration);
         return { asset: "USDC", amount: priceBaseUnits.toString() };
       },
     },
-    description: "Aave Liquidation Guard — monitors health factor, supplies collateral on trigger",
+    description: "Aave Liquidation Protection — monitors health factor, supplies collateral or repays debt on trigger",
   },
 };
 
@@ -78,28 +90,21 @@ app.use(paymentMiddleware(routes, resourceServer));
 
 // ── Validation ────────────────────────────────────────────────────────────────
 
-const hfGuardSchema = z.object({
-  protectedUser: z.string().regex(/^0x[a-fA-F0-9]{40}$/).optional(),
-  threshold: z
-    .string()
-    .transform((v) => parseFloat(v))
-    .pipe(z.number().min(1.01).max(3.0)),
-  duration: z
-    .string()
-    .optional()
-    .default("86400")
-    .transform((v) => parseInt(v, 10))
-    .pipe(z.number().min(3600).max(2592000)),
-  collateralAsset: z
-    .string()
-    .regex(/^0x[a-fA-F0-9]{40}$/)
-    .optional()
-    .default(WETH_BASE_SEPOLIA),
-  collateralAmount: z
-    .string()
-    .optional()
-    .default("100000000000000000") // 0.1 ETH
-    .transform((v) => BigInt(v)),
+const addressRegex = /^0x[a-fA-F0-9]{40}$/;
+
+const protectionSchema = z.object({
+  protectedUser: z.string().regex(addressRegex),
+  protectionType: z.number().int().min(0).max(2),
+  healthFactorThreshold: z.string().regex(/^\d+$/),
+  targetHealthFactor: z.string().regex(/^\d+$/),
+  collateralAsset: z.string().regex(addressRegex).default(WETH_BASE_SEPOLIA),
+  debtAsset: z.string().regex(addressRegex).default(USDC_BASE_SEPOLIA),
+  preferDebtRepayment: z.boolean().default(false),
+  duration: z.number().int().min(3600).max(2592000).default(86400),
+});
+
+const configIdSchema = z.object({
+  configId: z.number().int().min(0),
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -190,13 +195,9 @@ app.post("/api/quote", (req: Request, res: Response) => {
 });
 
 // ── 402-gated endpoint ────────────────────────────────────────────────────────
-// The x402 middleware (above) intercepts this route. If the client hasn't paid,
-// it returns 402 with payment terms. If payment is valid, it calls next() and
-// this handler runs.
 
-app.get("/api/protect/liquidation", async (req: Request, res: Response) => {
-  // Validate query params
-  const result = hfGuardSchema.safeParse(req.query);
+app.post("/api/protect/liquidation", async (req: Request, res: Response) => {
+  const result = protectionSchema.safeParse(req.body);
   if (!result.success) {
     res.status(400).json({
       error: "Invalid parameters",
@@ -207,7 +208,7 @@ app.get("/api/protect/liquidation", async (req: Request, res: Response) => {
 
   const params = result.data;
 
-  // Check RC balance before registering
+  // Check RC balance before creating config
   try {
     const rcBalance = await getReactiveBalance();
     if (rcBalance < MIN_RC_BALANCE) {
@@ -218,95 +219,167 @@ app.get("/api/protect/liquidation", async (req: Request, res: Response) => {
       return;
     }
   } catch {
-    // Can't reach Kopli — warn but don't block
-    console.warn("[protect] Could not verify RC balance on Kopli");
+    console.warn("[protect] Could not verify RC balance on Lasna");
   }
 
   try {
-    const agentAddress = extractPayerAddress(req);
-    if (!agentAddress) {
-      res.status(400).json({ error: "Could not determine payer address from payment" });
-      return;
-    }
-
-    const protectedUser = (params.protectedUser ?? agentAddress) as `0x${string}`;
-    const thresholdWad = BigInt(Math.floor(params.threshold * 1e18));
-
-    const { subscriptionId, txHash } = await registerSubscription({
-      agent: agentAddress,
-      protectedUser,
-      collateralAsset: params.collateralAsset as `0x${string}`,
-      threshold: thresholdWad,
-      collateralAmount: params.collateralAmount,
-      duration: BigInt(params.duration),
+    const { configId, txHash } = await createProtectionConfig({
+      protectedUser: params.protectedUser as Address,
+      protectionType: params.protectionType,
+      healthFactorThreshold: BigInt(params.healthFactorThreshold),
+      targetHealthFactor: BigInt(params.targetHealthFactor),
+      collateralAsset: params.collateralAsset as Address,
+      debtAsset: params.debtAsset as Address,
+      preferDebtRepayment: params.preferDebtRepayment,
     });
 
-    // Phase 1: log funding need; Phase 2 automates USDC→ETH→Kopli
-    const price = computePrice("hf-guard", params.duration);
+    // Fund RC gas pool from payment
+    const price = computePrice("aave-protection", params.duration);
     await fundRCGasPool(price);
 
-    const expiresAt = Math.floor(Date.now() / 1000) + params.duration;
-    const callbackAddress = process.env.AAVE_HF_CALLBACK_ADDRESS;
+    const callbackAddress = process.env.AAVE_PROTECTION_CALLBACK_ADDRESS;
 
     res.json({
       success: true,
-      subscriptionId: subscriptionId.toString(),
+      configId: configId.toString(),
       txHash,
-      agent: agentAddress,
-      protectedUser,
-      threshold: params.threshold,
+      protectedUser: params.protectedUser,
+      protectionType: params.protectionType,
+      healthFactorThreshold: params.healthFactorThreshold,
+      targetHealthFactor: params.targetHealthFactor,
       collateralAsset: params.collateralAsset,
-      collateralAmount: params.collateralAmount.toString(),
-      expiresAt,
-      expiresAtISO: new Date(expiresAt * 1000).toISOString(),
+      debtAsset: params.debtAsset,
+      preferDebtRepayment: params.preferDebtRepayment,
       message:
-        `Protection active. Health factor monitored every ~12 min. ` +
-        `Collateral supplied if HF drops below ${params.threshold}.`,
+        `Protection config #${configId} active. Health factor monitored every ~12 min. ` +
+        `Protection triggers when HF drops below threshold.`,
       nextSteps: [
-        `Approve AaveHFCallback (${callbackAddress}) to spend ` +
-          `${params.collateralAmount.toString()} of ${params.collateralAsset}.`,
+        `Approve AaveProtectionCallback (${callbackAddress}) to spend ` +
+          `your ${params.collateralAsset} (for collateral) and/or ${params.debtAsset} (for debt repayment).`,
       ],
     });
   } catch (err: any) {
     console.error("[protect/liquidation] Failed:", err);
     res.status(500).json({
-      error: "On-chain registration failed",
+      error: "On-chain config creation failed",
       reason: err?.shortMessage ?? err?.message ?? "Unknown error",
     });
   }
 });
 
-// ── Status endpoint ───────────────────────────────────────────────────────────
+// ── Config management endpoints ───────────────────────────────────────────────
 
-app.get("/api/status/:subscriptionId", async (req: Request, res: Response) => {
-  let id: bigint;
-  try {
-    id = BigInt(req.params.subscriptionId);
-  } catch {
-    res.status(400).json({ error: "Invalid subscription ID" });
+app.post("/api/protect/liquidation/pause", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
     return;
   }
 
   try {
-    const sub = await getSubscription(id);
-    const expiresAt = Number(sub.expiresAt);
-    const now = Math.floor(Date.now() / 1000);
+    const txHash = await pauseProtectionConfig(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "paused" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to pause config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+app.post("/api/protect/liquidation/resume", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+
+  try {
+    const txHash = await resumeProtectionConfig(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "resumed" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to resume config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+app.post("/api/protect/liquidation/cancel", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+
+  try {
+    const txHash = await cancelProtectionConfig(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "cancelled" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to cancel config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+// ── Status endpoints ──────────────────────────────────────────────────────────
+
+app.get("/api/status/config/:configId", async (req: Request, res: Response) => {
+  let id: bigint;
+  try {
+    id = BigInt(req.params.configId);
+  } catch {
+    res.status(400).json({ error: "Invalid config ID" });
+    return;
+  }
+
+  try {
+    const config = await getProtectionConfig(id);
+    const statusLabels = ["Active", "Paused", "Cancelled"];
 
     res.json({
-      subscriptionId: id.toString(),
-      agent: sub.agent,
-      protectedUser: sub.protectedUser,
-      collateralAsset: sub.collateralAsset,
-      threshold: (Number(sub.threshold) / 1e18).toFixed(4),
-      collateralAmount: sub.collateralAmount.toString(),
-      expiresAt,
-      expiresAtISO: new Date(expiresAt * 1000).toISOString(),
-      active: sub.active,
-      expired: now > expiresAt,
-      timeRemaining: sub.active ? Math.max(0, expiresAt - now) : 0,
+      configId: config.id.toString(),
+      protectedUser: config.protectedUser,
+      protectionType: config.protectionType,
+      healthFactorThreshold: config.healthFactorThreshold.toString(),
+      targetHealthFactor: config.targetHealthFactor.toString(),
+      collateralAsset: config.collateralAsset,
+      debtAsset: config.debtAsset,
+      preferDebtRepayment: config.preferDebtRepayment,
+      status: statusLabels[config.status] ?? "Unknown",
+      createdAt: Number(config.createdAt),
+      lastExecutedAt: Number(config.lastExecutedAt),
+      executionCount: config.executionCount,
+      consecutiveFailures: config.consecutiveFailures,
     });
   } catch (err: any) {
-    res.status(500).json({ error: "Failed to fetch subscription", reason: err.message });
+    res.status(500).json({ error: "Failed to fetch config", reason: err.message });
+  }
+});
+
+app.get("/api/status/health/:userAddress", async (req: Request, res: Response) => {
+  const { userAddress } = req.params;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(userAddress)) {
+    res.status(400).json({ error: "Invalid address" });
+    return;
+  }
+
+  try {
+    const healthFactor = await getHealthFactor(userAddress as Address);
+    const hfDecimal = Number(healthFactor) / 1e18;
+
+    res.json({
+      userAddress,
+      healthFactor: healthFactor.toString(),
+      healthFactorDecimal: hfDecimal.toFixed(4),
+      atRisk: hfDecimal < 1.5,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch health factor", reason: err.message });
+  }
+});
+
+app.get("/api/status/configs", async (_req: Request, res: Response) => {
+  try {
+    const activeConfigIds = await getActiveConfigs();
+    res.json({
+      activeConfigIds: activeConfigIds.map((id) => id.toString()),
+      count: activeConfigIds.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch active configs", reason: err.message });
   }
 });
 
@@ -314,16 +387,11 @@ app.get("/api/status/:subscriptionId", async (req: Request, res: Response) => {
 
 app.get("/health", async (_req: Request, res: Response) => {
   try {
-    const [activeCount, rcBalance] = await Promise.all([
-      getActiveCount(),
-      getReactiveBalance().catch(() => -1n),
-    ]);
-
+    const rcBalance = await getReactiveBalance().catch(() => -1n);
     const rcFunded = rcBalance >= MIN_RC_BALANCE;
 
     res.json({
       status: rcFunded ? "ok" : "degraded",
-      activeSubscriptions: activeCount.toString(),
       reactiveContractBalance: rcBalance >= 0n ? rcBalance.toString() : "unreachable",
       reactiveContractFunded: rcBalance >= 0n ? rcFunded : "unknown",
     });
@@ -340,8 +408,8 @@ app.listen(PORT, () => {
   console.log(`[server] Listening on :${PORT}`);
   console.log(`[server] Facilitator: ${FACILITATOR_URL}`);
   console.log(`[server] Recipient:   ${PAYMENT_RECIPIENT}`);
-  console.log(`[server] Callback:    ${process.env.AAVE_HF_CALLBACK_ADDRESS ?? "NOT SET"}`);
-  console.log(`[server] Reactive:    ${process.env.AAVE_HF_REACTIVE_ADDRESS ?? "NOT SET"}`);
+  console.log(`[server] Callback:    ${process.env.AAVE_PROTECTION_CALLBACK_ADDRESS ?? "NOT SET"}`);
+  console.log(`[server] Reactive:    ${process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? "NOT SET"}`);
 });
 
 export default app;

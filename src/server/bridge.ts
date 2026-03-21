@@ -8,8 +8,8 @@
  *      - 80% → swap to ETH via Uniswap V3
  *
  *   2. From the swapped ETH:
- *      - Keep a small reserve for Base Sepolia gas (registerSubscription calls)
- *      - Bridge the rest to Kopli as REACT (for RC callback delivery gas)
+ *      - Keep a small reserve for Base Sepolia gas (createProtectionConfig calls)
+ *      - Bridge the rest to Lasna as REACT (for RC callback delivery gas)
  *
  *   Phase 1: Steps are logged but not executed. Fund RC manually.
  *   Phase 2: Fully automated swap + bridge.
@@ -38,7 +38,7 @@ const POOL_FEE = 500; // 0.05%
 const SWAP_ALLOCATION_BPS = 8000n; // 80% goes to ETH
 /** Fraction of swapped ETH kept as Base Sepolia gas reserve. BPS. */
 const GAS_RESERVE_BPS = 1500n; // 15% of the 80% stays as ETH on Base
-/** Remaining 85% of the 80% gets bridged to Kopli as REACT. */
+/** Remaining 85% of the 80% gets bridged to Lasna as REACT. */
 
 // ── ABI fragments ─────────────────────────────────────────────────────────────
 
@@ -62,7 +62,7 @@ export interface FundingBreakdown {
   swapAmount: bigint;
   /** ETH kept on Base Sepolia for gas */
   gasReserveEth: string;
-  /** ETH bridged to Kopli as REACT */
+  /** ETH bridged to Lasna as REACT */
   bridgeAmountEth: string;
 }
 
@@ -92,12 +92,12 @@ export async function fundRCGasPool(usdcAmount: bigint): Promise<FundingResult> 
   console.log(`[bridge]   Margin (20%): ${formatUnits(breakdown.serverMargin, 6)} USDC (kept)`);
   console.log(`[bridge]   Swap (80%):   ${formatUnits(breakdown.swapAmount, 6)} USDC → ETH`);
   console.log(`[bridge]   Gas reserve:  ~${breakdown.gasReserveEth} ETH (kept on Base)`);
-  console.log(`[bridge]   Bridge:       ~${breakdown.bridgeAmountEth} ETH → REACT on Kopli`);
+  console.log(`[bridge]   Bridge:       ~${breakdown.bridgeAmountEth} ETH → REACT on Lasna`);
 
   // ── Phase 1: log only ───────────────────────────────────────────────────
   if (process.env.BRIDGE_MODE !== "live") {
     console.log(`[bridge]   Mode: DRY RUN (set BRIDGE_MODE=live to execute)`);
-    console.log(`[bridge]   Manually ensure RC on Kopli has sufficient REACT.`);
+    console.log(`[bridge]   Manually ensure RC on Lasna has sufficient REACT.`);
     return { success: true, breakdown };
   }
 
@@ -113,7 +113,7 @@ export async function fundRCGasPool(usdcAmount: bigint): Promise<FundingResult> 
 
     if (bridgeAmount > 0n) {
       try {
-        const bridgeTx = await bridgeEthToKopli(bridgeAmount);
+        const bridgeTx = await bridgeEthToLasna(bridgeAmount);
         console.log(`[bridge]   Bridge tx: ${bridgeTx}`);
         return {
           success: true,
@@ -226,22 +226,22 @@ async function swapUsdcToEth(
 // ── Reactive Network bridge ───────────────────────────────────────────────────
 
 /**
- * Bridge ETH from Base Sepolia to Kopli (Reactive Network).
+ * Bridge ETH from Base Sepolia to Lasna (Reactive Network).
  *
  * TODO: Implement using the official Reactive Network bridge contract.
  *       See: https://dev.reactive.network/docs/bridge
  *
  * Steps:
  *   1. Unwrap WETH → ETH (call WETH.withdraw())
- *   2. Send ETH to the bridge contract with recipient = RC address on Kopli
+ *   2. Send ETH to the bridge contract with recipient = RC address on Lasna
  *   3. Wait for bridge confirmation
  */
-async function bridgeEthToKopli(
+async function bridgeEthToLasna(
   ethAmount: bigint
 ): Promise<`0x${string}`> {
   // TODO: Replace with actual bridge contract call
   throw new Error(
-    `bridgeEthToKopli not yet implemented (amount: ${formatEther(ethAmount)} ETH). ` +
+    `bridgeEthToLasna not yet implemented (amount: ${formatEther(ethAmount)} ETH). ` +
       "Set BRIDGE_MODE=live only after implementing this function. " +
       "See https://dev.reactive.network/docs/bridge"
   );

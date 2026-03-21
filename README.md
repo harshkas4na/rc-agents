@@ -2,16 +2,16 @@
 
 An automation marketplace where AI agents pay for autonomous DeFi protection using x402 micropayments and Reactive Smart Contracts.
 
-**What it does:** An AI agent sends `$0.12` in USDC, and gets Aave liquidation protection that runs autonomously for 24 hours — no accounts, no signup, no human in the loop.
+**What it does:** An AI agent sends `$0.30` in USDC, and gets Aave liquidation protection that runs autonomously for 24 hours — no accounts, no signup, no human in the loop.
 
 ```
 AI Agent (wallet = identity)
     |
-    |  GET /api/services             ← discover what's available
-    |  GET /api/protect/liquidation  ← hit the service endpoint
+    |  GET  /api/services                    ← discover available services
+    |  POST /api/protect/liquidation         ← hit the service endpoint
     |
     v
-x402 Server ──> 402: pay $0.12 USDC on Base Sepolia
+x402 Server ──> 402: pay $0.30 USDC on Base Sepolia
     |
     |  Agent signs EIP-3009, retries with payment
     |
@@ -22,20 +22,21 @@ Payment confirmed (USDC settled on-chain)
     |    ├─ 20% kept as server margin (USDC)
     |    └─ 80% swapped USDC → ETH (Uniswap V3)
     |         ├─ 15% ETH kept for Base gas
-    |         └─ 85% ETH bridged → REACT on Kopli (RC gas)
+    |         └─ 85% ETH bridged → REACT on Lasna (RC gas)
     |
-    └─ chain.ts: registerSubscription() on AaveHFCallback
+    └─ chain.ts: createProtectionConfig() on AaveProtectionCallback
          |
          v
-    CC emits SubscriptionRegistered
+    CC emits ProtectionConfigured
          |
          v
-    RC (Kopli) picks up event ──> fires immediate runCycle()
-    RC CRON ticker ──> fires runCycle() every ~12 min
+    RC (Lasna) picks up event
+    ├─ self-callback: persistConfigCreated() → subscribes to CRON
+    └─ CRON fires every ~12 min → checkAndProtectPositions() on CC
          |
          v
     CC checks Aave health factor
-         |  HF < 1.5? ──> supply collateral to Aave
+         HF < threshold? → supply collateral / repay debt / both
 ```
 
 ---
@@ -46,32 +47,40 @@ Payment confirmed (USDC settled on-chain)
 
 1. **Discover** — `GET /api/services` returns available services, pricing, and parameter specs
 2. **Quote** — `POST /api/quote` returns the exact USDC cost for a service + duration
-3. **Approve collateral** — Agent calls `ERC20.approve(callbackContract, amount)` on Base Sepolia
-4. **Pay and register** — Agent hits the service endpoint. x402 middleware returns `402 Payment Required` with USDC terms. Agent signs EIP-3009 authorization and retries. Payment settles on-chain automatically.
-5. **Protected** — Subscription is registered on the CC. The RC monitors and acts autonomously until expiry.
+3. **Approve assets** — Agent calls `ERC20.approve(callbackContract, amount)` for collateral and/or debt assets
+4. **Pay and register** — Agent POSTs to the service endpoint with protection params. x402 middleware returns `402 Payment Required`. Agent signs EIP-3009 and retries. Payment settles on-chain.
+5. **Manage** — Agent can pause, resume, or cancel the config via dedicated endpoints
+6. **Protected** — The RC monitors and acts autonomously every ~12 minutes until cancelled
 
 ### The server's perspective
 
-1. **x402 middleware** intercepts the request, verifies/settles the USDC payment via the facilitator
-2. **Payment confirmed** — handler extracts the payer's wallet address from the payment header
-3. **RC balance check** — queries the RC on Kopli to verify it has enough REACT for callbacks
-4. **Registration** — calls `register()` on the CC (Base Sepolia), parses the subscription ID from the emitted event
-5. **Funding pipeline** — splits the USDC payment into server margin, gas reserve, and RC funding. Swaps USDC → ETH via Uniswap V3, bridges ETH → REACT on Kopli.
-6. **Response** — returns subscription ID, tx hash, expiry, and next steps to the agent
+1. **x402 middleware** intercepts the request, verifies/settles USDC via the facilitator
+2. **Payment confirmed** — handler extracts the payer's address from the payment header
+3. **RC balance check** — queries the RC on Lasna to verify it has enough REACT for callbacks
+4. **Config creation** — calls `createProtectionConfig()` on the CC (Base Sepolia), parses the config ID from the `ProtectionConfigured` event
+5. **Funding pipeline** — splits the USDC into server margin, gas reserve, and RC funding
+6. **Response** — returns config ID, tx hash, and next steps to the agent
 
-### The contract's perspective
+### The contracts' perspective
 
-1. **CC** (`AaveHFCallback` on Base Sepolia) stores subscriptions and executes protection. `runCycle()` iterates active subs, queries Aave health factors, supplies collateral when triggered.
-2. **RC** (`AaveHFReactive` on Kopli) is stateless. Subscribes to `SubscriptionRegistered` events + CRON ticks. On any match, emits `Callback` → Reactive Network delivers `runCycle()` to the CC.
-3. All per-user threshold logic lives in the CC, not the RC. This sidesteps the Reactive Network constraint that `react()` cannot read state written after deployment.
+**CC** (`AaveProtectionCallback` on Base Sepolia):
+- Stores protection configs with health factor thresholds, target HF, asset choices
+- `checkAndProtectPositions(address sender)` is called by the RC via Reactive Network
+- Checks each active config against Aave, executes protection (collateral deposit, debt repayment, or both)
+- Emits lifecycle events: `ProtectionConfigured`, `ProtectionExecuted`, `ProtectionCancelled`, `ProtectionPaused`, `ProtectionResumed`, `ProtectionCycleCompleted`
+- Auto-cancels after 5 consecutive failures. 30s retry cooldown.
+
+**RC** (`AaveProtectionReactive` on Lasna):
+- Subscribes to CC lifecycle events + CRON_100 (~12 min) tick
+- `react(LogRecord)` routes events to self-callback functions for state persistence
+- Lazy cron subscription: subscribes when first config created, unsubscribes when last config cancelled
+- `getPausableSubscriptions()` returns the cron subscription for pause/resume support
 
 ---
 
 ## Architecture
 
-Each service is a **specialized contract pair** — one RC on the Reactive Network, one CC on the destination chain. Services are isolated: a bug in one can't affect another. New services are added by deploying a new pair and adding a route to the server.
-
-The server is the **orchestration layer** between x402 payments and on-chain registration. It does not run the protection logic — that's entirely autonomous in the contracts.
+Each service is a **specialized contract pair** — one RC on the Reactive Network (Lasna testnet), one CC on the destination chain (Base Sepolia). Contracts are deployed separately via Foundry. This repo is the **server layer** that bridges x402 payments to on-chain registration.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -79,26 +88,25 @@ The server is the **orchestration layer** between x402 payments and on-chain reg
 │                                                                 │
 │  index.ts ─── Express + x402 middleware ─── API routes          │
 │     │                                                           │
-│     ├── services.ts ─── service catalog + pricing               │
+│     ├── services.ts ─── service catalog + integer pricing       │
 │     ├── chain.ts ────── viem clients + contract calls           │
 │     ├── bridge.ts ───── USDC split → Uniswap swap → RN bridge  │
-│     ├── contracts.ts ── addresses from .env                     │
-│     └── abis/ ───────── expected contract interfaces            │
+│     ├── contracts.ts ── addresses, proxies, cron topics, chains │
+│     └── abis/ ───────── CC + RC ABIs (update after deploy)     │
 │                                                                 │
 └──────────────────────────┬──────────────────────────────────────┘
                            │
               ┌────────────┼────────────┐
               ▼                         ▼
-    AaveHFCallback (CC)        AaveHFReactive (RC)
-    Base Sepolia               Kopli (Reactive Network)
-    ─────────────              ──────────────────────
-    register()                 react() on events
-    runCycle()                 emit Callback()
-    getSubscription()          stateless
-    pause/unpause
+   AaveProtectionCallback      AaveProtectionReactive
+   Base Sepolia (84532)        Lasna Testnet (5318007)
+   ─────────────────────       ─────────────────────────
+   AbstractCallback            AbstractPausableReactive
+   authorizedSenderOnly        react(LogRecord)
+   createProtectionConfig()    self-callbacks for state
+   checkAndProtectPositions()  lazy cron subscribe/unsub
+   pause/resume/cancel         getPausableSubscriptions()
 ```
-
-**Contracts are deployed separately** (via Foundry). This repo is the server + ABI definitions. After deploying, paste the contract addresses into `.env` and the ABIs into `src/abis/`.
 
 ---
 
@@ -107,15 +115,22 @@ The server is the **orchestration layer** between x402 payments and on-chain reg
 ```
 src/
   abis/
-    aave-hf-callback.ts        Expected CC ABI (update after deploy)
-    aave-hf-reactive.ts        RC ABI (minimal views)
+    aave-protection-callback.ts   CC ABI (parseAbi, update after deploy)
+    aave-protection-reactive.ts   RC ABI (minimal views)
   config/
-    contracts.ts                Contract addresses from .env + callback proxies
-    services.ts                 Service catalog, pricing (integer math, bigint)
+    contracts.ts                  Addresses, callback proxies, cron topics,
+                                  chain IDs, faucets, Aave protocol addresses
+    services.ts                   Service catalog, pricing (bigint math)
+  contracts/
+    AaveProtectionCallback.sol    CC source (deploy via Foundry)
+    AaveProtectionReactive.sol    RC source (deploy via Foundry)
+    RescuableBase.sol             Base contract for asset rescue
   server/
-    index.ts                    Express + x402 middleware, all API routes
-    chain.ts                    viem clients (Base + Kopli), contract read/write
-    bridge.ts                   USDC split → Uniswap V3 swap → Kopli bridge
+    index.ts                      Express + x402, all API routes
+    chain.ts                      viem clients (Base Sepolia + Lasna),
+                                  createProtectionConfig, pause/resume/cancel,
+                                  getProtectionConfig, getHealthFactor
+    bridge.ts                     USDC → ETH → REACT funding pipeline
 ```
 
 ---
@@ -125,9 +140,9 @@ src/
 ### Prerequisites
 
 - Node.js 18+
-- A wallet with ETH on Base Sepolia (for `registerSubscription()` gas)
-- Deployed CC + RC contracts (see contract deployment section)
-- REACT tokens funding the RC on Kopli
+- A wallet with ETH on Base Sepolia (for `createProtectionConfig()` gas)
+- Deployed CC + RC contracts via Foundry (see Reactive Network skill)
+- lREACT tokens funding the RC on Lasna
 
 ### 1. Install
 
@@ -137,32 +152,39 @@ cd rc-agents
 npm install
 ```
 
-### 2. Configure
+### 2. Deploy contracts (via Foundry, separate from this repo)
+
+```bash
+# Get lREACT tokens
+export SEPOLIA_FAUCET=0x9b9BB25f1A81078C544C829c5EB7822d747Cf434
+cast send $SEPOLIA_FAUCET --value 1ether --rpc-url $SEPOLIA_RPC --private-key $PRIVATE_KEY
+
+# Deploy CC to Base Sepolia (callback proxy = 0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6)
+forge create src/AaveProtectionCallback.sol:AaveProtectionCallback \
+  --constructor-args $DEPLOYER_ADDR 0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6 \
+  $LENDING_POOL $PROTOCOL_DATA_PROVIDER $ADDRESSES_PROVIDER \
+  --rpc-url $BASE_SEPOLIA_RPC --private-key $PRIVATE_KEY
+
+# Deploy RC to Lasna (pass CC address + cron topic + dest chain ID)
+forge create src/AaveProtectionReactive.sol:AaveProtectionReactive \
+  --constructor-args $DEPLOYER_ADDR $CC_ADDRESS \
+  0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70 84532 \
+  --value 0.1ether \
+  --rpc-url https://lasna-rpc.rnk.dev/ --private-key $PRIVATE_KEY
+```
+
+### 3. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in your `.env`:
-
-| Variable | What it is | Where to get it |
-|---|---|---|
-| `SERVER_WALLET_ADDRESS` | Wallet that receives x402 USDC and owns the CC | Your wallet |
-| `SERVER_PRIVATE_KEY` | Private key for that wallet | Never commit this |
-| `AAVE_HF_CALLBACK_ADDRESS` | CC address on Base Sepolia | After deploying the CC |
-| `AAVE_HF_REACTIVE_ADDRESS` | RC address on Kopli | After deploying the RC |
-| `X402_FACILITATOR_URL` | x402 facilitator | `https://x402.org/facilitator` (testnet) |
-
-### 3. Deploy contracts
-
-Contracts are deployed separately using Foundry or Hardhat. The CC and RC must follow Reactive Network patterns:
-
-- **CC**: inherits `AbstractCallback`, uses `authorizedSenderOnly` modifier. The callback proxy address for Base Sepolia is `0x0D3E76De6bC44309083cAAFdB49A088B8a250947` (set in `src/config/contracts.ts`).
-- **RC**: inherits `AbstractPausableReactive`, uses `react(LogRecord)`, emits `Callback()`.
-
-After deploying, set `AAVE_HF_CALLBACK_ADDRESS` and `AAVE_HF_REACTIVE_ADDRESS` in `.env`.
-
-If the deployed contract's ABI differs from the expected interface in `src/abis/aave-hf-callback.ts`, update the ABI file to match.
+| Variable | What it is |
+|---|---|
+| `SERVER_WALLET_ADDRESS` | Wallet that receives x402 USDC and owns the CC |
+| `SERVER_PRIVATE_KEY` | Private key for that wallet |
+| `AAVE_PROTECTION_CALLBACK_ADDRESS` | CC address on Base Sepolia |
+| `AAVE_PROTECTION_REACTIVE_ADDRESS` | RC address on Lasna |
 
 ### 4. Start server
 
@@ -170,117 +192,60 @@ If the deployed contract's ABI differs from the expected interface in `src/abis/
 npm run dev
 ```
 
-Server listens on `http://localhost:3000`.
-
 ---
 
 ## API Reference
 
 ### Free endpoints
 
-**`GET /api/services`** — Service catalog
+**`GET /api/services`** — Service catalog with pricing
 
-Returns all available services with pricing examples, duration limits, and status.
-
-```bash
-curl http://localhost:3000/api/services
+**`POST /api/quote`** — Exact price for a duration
+```json
+{ "service": "aave-protection", "durationSeconds": 86400 }
 ```
+
+**`GET /api/status/config/:configId`** — Protection config details
+
+**`GET /api/status/health/:userAddress`** — Current Aave health factor
+
+**`GET /api/status/configs`** — All active config IDs
+
+**`GET /health`** — Server health + RC balance check
+
+### 402-gated endpoint
+
+**`POST /api/protect/liquidation`** — Create protection config
 
 ```json
 {
-  "services": [{
-    "id": "hf-guard",
-    "name": "Aave Liquidation Guard",
-    "description": "Monitors your Aave health factor and automatically supplies collateral...",
-    "trigger": "Aave Health Factor < threshold",
-    "action": "Supply collateral to Aave on your behalf",
-    "pricing": {
-      "perDay": "$0.1",
-      "perDayBaseUnits": 100000,
-      "example1Day": "$0.12",
-      "example7Days": "$0.84"
-    },
-    "limits": { "minDurationSeconds": 3600, "maxDurationSeconds": 2592000 },
-    "network": "eip155:84532",
-    "status": "live"
-  }]
-}
-```
-
-**`POST /api/quote`** — Exact price
-
-```bash
-curl -X POST http://localhost:3000/api/quote \
-  -H "Content-Type: application/json" \
-  -d '{"service": "hf-guard", "durationSeconds": 86400}'
-```
-
-```json
-{
-  "service": "hf-guard",
-  "durationSeconds": 86400,
-  "price": "$0.12",
-  "priceBaseUnits": "120000",
-  "currency": "USDC",
-  "network": "eip155:84532"
-}
-```
-
-**`GET /api/status/:subscriptionId`** — Subscription state
-
-```bash
-curl http://localhost:3000/api/status/0
-```
-
-```json
-{
-  "subscriptionId": "0",
-  "agent": "0x...",
   "protectedUser": "0x...",
-  "threshold": "1.5000",
-  "active": true,
-  "expired": false,
-  "timeRemaining": 82341
+  "protectionType": 0,
+  "healthFactorThreshold": "1500000000000000000",
+  "targetHealthFactor": "2000000000000000000",
+  "collateralAsset": "0x4200000000000000000000000000000000000006",
+  "debtAsset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+  "preferDebtRepayment": false,
+  "duration": 86400
 }
 ```
 
-**`GET /health`** — Server health + RC balance
+Protection types: `0` = collateral deposit, `1` = debt repayment, `2` = both
 
-### 402-gated endpoints
+### Config management (free, owner-only)
 
-**`GET /api/protect/liquidation`** — Register Aave HF guard
-
-| Query param | Required | Default | Description |
-|---|---|---|---|
-| `threshold` | yes | — | HF threshold, e.g. `1.5` (range: 1.01–3.0) |
-| `duration` | no | `86400` | Duration in seconds (1 hour to 30 days) |
-| `protectedUser` | no | payer's address | Aave user to protect |
-| `collateralAsset` | no | WETH | ERC-20 to supply on trigger |
-| `collateralAmount` | no | `100000000000000000` (0.1 ETH) | Amount per trigger (in token base units) |
-
-**Without payment:** returns `402 Payment Required` with USDC terms in headers.
-
-**With valid x402 payment:** registers the subscription on-chain:
-
+**`POST /api/protect/liquidation/pause`** — Pause a config
 ```json
-{
-  "success": true,
-  "subscriptionId": "0",
-  "txHash": "0x...",
-  "agent": "0x...",
-  "protectedUser": "0x...",
-  "threshold": 1.5,
-  "expiresAtISO": "2026-03-21T17:00:00.000Z",
-  "message": "Protection active. Health factor monitored every ~12 min.",
-  "nextSteps": ["Approve AaveHFCallback (0x...) to spend your collateral."]
-}
+{ "configId": 0 }
 ```
+
+**`POST /api/protect/liquidation/resume`** — Resume a paused config
+
+**`POST /api/protect/liquidation/cancel`** — Cancel a config permanently
 
 ---
 
 ## Agent Integration
-
-### With @x402/fetch (recommended)
 
 ```typescript
 import { wrapFetchWithPayment } from "@x402/fetch";
@@ -293,77 +258,73 @@ const x402Fetch = wrapFetchWithPayment(fetch, AGENT_PRIVATE_KEY, {
 // 1. Discover services
 const services = await (await fetch("http://localhost:3000/api/services")).json();
 
-// 2. Approve collateral (one-time, on Base Sepolia)
-// await walletClient.writeContract({ ... ERC20.approve(CALLBACK_ADDRESS, amount) ... })
+// 2. Approve collateral + debt assets on the CC (one-time)
+// await walletClient.writeContract({ ... ERC20.approve(CC_ADDRESS, amount) ... })
 
-// 3. Pay and register — x402 handles 402 → sign → retry automatically
-const res = await x402Fetch(
-  "http://localhost:3000/api/protect/liquidation?threshold=1.5&duration=86400"
-);
+// 3. Pay and register — x402 handles 402 → sign → retry
+const res = await x402Fetch("http://localhost:3000/api/protect/liquidation", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    protectedUser: agentAddress,
+    protectionType: 2, // BOTH
+    healthFactorThreshold: "1500000000000000000", // 1.5
+    targetHealthFactor: "2000000000000000000",    // 2.0
+    collateralAsset: "0x4200000000000000000000000000000000000006",
+    debtAsset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    preferDebtRepayment: false,
+    duration: 86400,
+  }),
+});
+
 const result = await res.json();
-console.log(result.subscriptionId); // "0"
+console.log(result.configId); // "0"
 ```
-
-### Manual flow
-
-1. `GET /api/protect/liquidation?threshold=1.5` → receive `402` + `PAYMENT-REQUIRED` header
-2. Decode payment terms (base64 JSON): amount, network, recipient
-3. Sign EIP-3009 `TransferWithAuthorization` for USDC
-4. Retry the same request with `PAYMENT-SIGNATURE` header
-5. Server verifies, settles USDC, registers subscription, returns result
 
 ---
 
 ## Funding Pipeline
 
-When a payment comes in, `bridge.ts` handles the USDC → REACT conversion:
-
 ```
-$0.12 USDC payment
+$0.30 USDC payment
   │
-  ├─ 20% ($0.024) ──> server margin (stays as USDC)
+  ├─ 20% ($0.06) ──> server margin (stays as USDC)
   │
-  └─ 80% ($0.096) ──> Uniswap V3 swap ──> ETH
-                         │
-                         ├─ 15% ETH ──> gas reserve (stays on Base Sepolia)
-                         │
-                         └─ 85% ETH ──> Reactive Network bridge ──> REACT on Kopli
-                                         (funds RC for callback delivery)
+  └─ 80% ($0.24) ──> Uniswap V3 swap ──> ETH
+                       │
+                       ├─ 15% ETH ──> gas reserve (stays on Base Sepolia)
+                       │
+                       └─ 85% ETH ──> Reactive Network bridge ──> REACT on Lasna
+                                       (funds RC for callback delivery)
 ```
 
-**Phase 1 (current):** The split is computed and logged. The operator funds the RC manually. Set `BRIDGE_MODE=live` in `.env` to activate automated swap (requires Uniswap V3 pool on Base Sepolia).
+Set `BRIDGE_MODE=live` in `.env` to activate automated swap. Default is dry-run (logged only, fund RC manually).
 
-**Phase 2:** Full automation including the Reactive Network ETH → REACT bridge.
+---
+
+## Reactive Network Details
+
+| Item | Value |
+|---|---|
+| Testnet name | Lasna |
+| Chain ID | 5318007 |
+| RPC | `https://lasna-rpc.rnk.dev/` |
+| Explorer | `https://lasna.reactscan.net` |
+| Callback Proxy (Base Sepolia) | `0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6` |
+| Callback Proxy (Sepolia) | `0xc9f36411C9897e7F959D99ffca2a0Ba7ee0D7bDA` |
+| CRON_100 topic (~12 min) | `0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70` |
+| lREACT faucet (Sepolia) | Send ETH to `0x9b9BB25f1A81078C544C829c5EB7822d747Cf434` (max 5 ETH/tx) |
+| lREACT faucet (Base Sepolia) | Send ETH to `0x2afaFD298b23b62760711756088F75B7409f5967` |
 
 ---
 
 ## Adding a New Service
 
-Each service gets its own contract pair and ABI. No existing contracts or routes are modified.
-
-1. **Deploy** CC + RC for the new service (via Foundry)
-2. **Add ABI** — create `src/abis/new-service-callback.ts` with the CC's ABI
-3. **Add config** — add entry to `src/config/services.ts`:
-   ```typescript
-   "stop-loss": {
-     id: "stop-loss",
-     name: "Stop Loss",
-     pricePerDay: 50_000, // $0.05/day
-     callbackAddressEnv: "STOP_LOSS_CALLBACK_ADDRESS",
-     reactiveAddressEnv: "STOP_LOSS_REACTIVE_ADDRESS",
-     // ...
-   }
-   ```
-4. **Add route** — add x402-gated route in `src/server/index.ts`
-5. **Add chain helper** — add registration function in `src/server/chain.ts`
-6. **Set env vars** — contract addresses in `.env`
-7. **Restart server**
-
-Example future services:
-- **Stop Loss** — watch price oracle, swap to stablecoin when price drops
-- **Take Profit** — swap when price rises above target
-- **Auto-Rebalance** — rebalance portfolio when drift exceeds threshold
-- **Cron Action** — execute arbitrary CC logic on a schedule
+1. Write and deploy CC + RC (inheriting `AbstractCallback` / `AbstractPausableReactive`)
+2. Add ABI file in `src/abis/`
+3. Add entry to `src/config/services.ts`
+4. Add 402-gated route + chain helpers
+5. Set env vars, restart
 
 ---
 
@@ -371,31 +332,18 @@ Example future services:
 
 | Decision | Why |
 |---|---|
-| Server is separate from contracts | Contracts deploy via Foundry; server is the API + bridge layer |
-| Specialized contracts per service | Isolation, independent deployment, no shared state risk |
-| RC is stateless | `react()` can't read post-deployment state; CC handles all threshold logic |
-| Integer pricing (bigint) | No floating point drift on sub-day durations. Multiply before divide. |
-| Dynamic x402 pricing | Price computed from query params at request time via `DynamicPrice` function |
-| ABI as expected interface | `src/abis/` defines the expected contract interface. Update after deploy if needed. |
-| `BRIDGE_MODE` toggle | Dry-run by default. Set `live` only after testing swap + bridge. |
-| Swap-and-pop for expired subs | O(1) removal keeps `runCycle()` gas constant per active subscription |
-| Emergency pause on CC | Owner can halt everything if Aave oracle is compromised |
-
----
-
-## Current Limitations
-
-- **Kopli bridge not automated** — `bridgeEthToKopli()` in bridge.ts needs the actual RN bridge contract. Fund RC manually until implemented.
-- **Single-owner access control** — no multisig or timelock. Testnet-appropriate; harden for mainnet.
-- **No subscription refunds** — if the RC runs dry, subscriptions expire without compensation.
-- **Base Sepolia only** — mainnet deployment requires verifying all addresses, pools, and bridge contracts.
-- **ABIs are expected interfaces** — must match the deployed contracts. If your CC has different function signatures, update `src/abis/aave-hf-callback.ts`.
+| Server separate from contracts | Contracts deploy via Foundry; server is API + bridge |
+| Specialized contracts per service | Isolation, independent deploy, no shared state risk |
+| RC stateless in react() | react() can't read post-deploy state; CC owns all logic |
+| Lazy cron subscription | RC only subscribes to CRON when active configs exist |
+| Self-callbacks for RC state | react() emits Callback to itself; callbackOnly persists |
+| address sender first param | Reactive Network mandatory pattern for all callback targets |
+| Integer pricing (bigint) | No float drift. Multiply before divide. |
+| BRIDGE_MODE toggle | Dry-run by default. Live only after testing swap + bridge. |
 
 ---
 
 ## x402 Protocol Reference
-
-This repo includes comprehensive x402 documentation:
 
 | File | Contents |
 |---|---|
@@ -412,11 +360,11 @@ This repo includes comprehensive x402 documentation:
 ## Quick Reference
 
 ```
-Testnet facilitator:   https://x402.org/facilitator
-Base Sepolia RPC:      https://sepolia.base.org
-Kopli RPC:             https://kopli-rpc.rkt.ink
-Kopli faucet:          https://kopli.reactscan.net/faucet
-USDC faucet:           https://faucet.circle.com (Base Sepolia)
-Callback proxy (Base): 0x0D3E76De6bC44309083cAAFdB49A088B8a250947
-x402 npm:              @x402/express @x402/core @x402/evm @x402/fetch
+Testnet facilitator:           https://x402.org/facilitator
+Base Sepolia RPC:              https://sepolia.base.org
+Lasna RPC:                     https://lasna-rpc.rnk.dev/
+Lasna explorer:                https://lasna.reactscan.net
+USDC faucet:                   https://faucet.circle.com (Base Sepolia)
+x402 npm:                      @x402/express @x402/core @x402/evm @x402/fetch
+Callback Proxy (Base Sepolia): 0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6
 ```
