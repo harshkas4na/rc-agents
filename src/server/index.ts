@@ -29,7 +29,7 @@ import {
   formatUsdc,
   WETH_BASE_SEPOLIA,
   USDC_BASE_SEPOLIA,
-} from "../config/services.js";
+} from "../config/services";
 import {
   createProtectionConfig,
   pauseProtectionConfig,
@@ -40,8 +40,8 @@ import {
   getHealthFactor,
   getReactiveBalance,
   MIN_RC_BALANCE,
-} from "./chain.js";
-import { fundRCGasPool } from "./bridge.js";
+} from "./chain";
+import { fundRCGasPool } from "./bridge";
 import type { Address } from "viem";
 
 const app = express();
@@ -79,7 +79,14 @@ const routes: RoutesConfig = {
         const duration = parseInt(body.duration ?? "86400", 10);
         const clampedDuration = Math.max(3600, Math.min(2592000, isNaN(duration) ? 86400 : duration));
         const priceBaseUnits = computePrice("aave-protection", clampedDuration);
-        return { asset: "USDC", amount: priceBaseUnits.toString() };
+        // Return full AssetAmount with EIP-712 domain info so client can sign EIP-3009.
+        // The library skips defaultMoneyConversion (which adds name/version) when
+        // given an AssetAmount object — we must include extra fields manually.
+        return {
+          asset: USDC_BASE_SEPOLIA,
+          amount: priceBaseUnits.toString(),
+          extra: { name: "USDC", version: "2" },
+        };
       },
     },
     description: "Aave Liquidation Protection — monitors health factor, supplies collateral or repays debt on trigger",
@@ -98,7 +105,7 @@ const protectionSchema = z.object({
   healthFactorThreshold: z.string().regex(/^\d+$/),
   targetHealthFactor: z.string().regex(/^\d+$/),
   collateralAsset: z.string().regex(addressRegex).default(WETH_BASE_SEPOLIA),
-  debtAsset: z.string().regex(addressRegex).default(USDC_BASE_SEPOLIA),
+  debtAsset: z.string().regex(addressRegex).default("0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"),
   preferDebtRepayment: z.boolean().default(false),
   duration: z.number().int().min(3600).max(2592000).default(86400),
 });
@@ -358,15 +365,29 @@ app.get("/api/status/health/:userAddress", async (req: Request, res: Response) =
 
   try {
     const healthFactor = await getHealthFactor(userAddress as Address);
-    const hfDecimal = Number(healthFactor) / 1e18;
+    const MAX_HF = 115792089237316195423570985008687907853269984665640564039457584007913129639935n;
+    const noPosition = healthFactor === MAX_HF;
+    const hfDecimal = noPosition ? null : Number(healthFactor) / 1e18;
 
     res.json({
       userAddress,
-      healthFactor: healthFactor.toString(),
-      healthFactorDecimal: hfDecimal.toFixed(4),
-      atRisk: hfDecimal < 1.5,
+      healthFactor: noPosition ? "MAX" : healthFactor.toString(),
+      healthFactorDecimal: noPosition ? null : hfDecimal!.toFixed(4),
+      atRisk: noPosition ? false : hfDecimal! < 1.5,
+      noAavePosition: noPosition,
     });
   } catch (err: any) {
+    // Reverts when user has no Aave position (lendingPool returns max HF or reverts)
+    if (err?.message?.includes("execution reverted")) {
+      res.json({
+        userAddress,
+        healthFactor: "MAX",
+        healthFactorDecimal: null,
+        atRisk: false,
+        noAavePosition: true,
+      });
+      return;
+    }
     res.status(500).json({ error: "Failed to fetch health factor", reason: err.message });
   }
 });

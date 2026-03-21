@@ -22,8 +22,8 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { baseSepolia } from "viem/chains";
-import { AAVE_PROTECTION_CALLBACK_ABI } from "../abis/aave-protection-callback.js";
-import { CONTRACTS } from "../config/contracts.js";
+import { AAVE_PROTECTION_CALLBACK_ABI } from "../abis/aave-protection-callback";
+import { CONTRACTS } from "../config/contracts";
 
 // ── Lasna chain definition (Reactive Network testnet, not in viem built-ins) ──
 
@@ -47,7 +47,8 @@ const PROTECTION_CONFIGURED_SELECTOR = keccak256(
 function getAccount() {
   const pk = process.env.SERVER_PRIVATE_KEY;
   if (!pk) throw new Error("SERVER_PRIVATE_KEY not set");
-  return privateKeyToAccount(pk as `0x${string}`);
+  const hex = pk.startsWith("0x") ? pk : `0x${pk}`;
+  return privateKeyToAccount(hex as `0x${string}`);
 }
 
 export const publicClient = createPublicClient({

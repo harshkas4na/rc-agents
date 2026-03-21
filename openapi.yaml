@@ -1,0 +1,881 @@
+openapi: 3.1.0
+info:
+  title: Aave Liquidation Protection API
+  version: 1.0.0
+  description: |
+    Autonomous Aave liquidation protection service powered by the Reactive Network.
+
+    Agents can use this API to protect DeFi positions from liquidation on Aave (Base Sepolia).
+    The service monitors health factors every ~12 minutes and automatically supplies collateral
+    or repays debt when the health factor drops below a configured threshold.
+
+    ## How it works
+    1. Call `GET /api/services` to see available services and pricing.
+    2. Call `POST /api/quote` to get an exact price for your desired duration.
+    3. Call `POST /api/protect/liquidation` with an x402 payment header to activate protection.
+       - The endpoint is gated by the [x402 payment protocol](https://x402.org).
+       - If no payment is included, the server returns `402 Payment Required` with payment details.
+       - Payment is in USDC on Base Sepolia (eip155:84532).
+    4. After payment, approve the `AaveProtectionCallback` contract (returned in the response)
+       to spend your collateral and/or debt assets.
+    5. Manage the config with pause/resume/cancel. Monitor it via the status endpoints.
+
+    ## x402 Payment Flow
+    Protected endpoints return `402 Payment Required` when called without payment.
+    The response body contains `accepts` — an array of payment options. Agents must:
+    1. Sign an EIP-3009 `transferWithAuthorization` over USDC.
+    2. Encode and attach it as the `X-PAYMENT` header.
+    3. Retry the request.
+
+    See https://x402.org/docs for SDK helpers in TypeScript and Python.
+
+    ## Networks
+    - **Base Sepolia** (`eip155:84532`) — Aave positions + callback contract
+    - **Lasna Testnet** (`eip155:5318007`) — Reactive contract (monitoring + automation)
+
+    ## Key Addresses (Base Sepolia)
+    - USDC (x402 payments): `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
+    - USDC (Aave debt asset): `0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f`
+    - WETH (collateral): `0x4200000000000000000000000000000000000006`
+    - Aave Pool: `0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27`
+    - AaveProtectionCallback: `0x24df0bBC9c4b95e8643848EC6B7f0Ac638BD3476`
+    - AaveProtectionReactive (Lasna): `0xb1d20ecA7e6e6998A985C41Ae69695125F67619D`
+
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+
+tags:
+  - name: Discovery
+    description: Service catalog and pricing — no payment required
+  - name: Protection
+    description: Create and manage liquidation protection configs
+  - name: Status
+    description: Query on-chain state — no payment required
+  - name: Health
+    description: Server health check
+
+paths:
+  /health:
+    get:
+      operationId: getServerHealth
+      tags: [Health]
+      summary: Server health check
+      description: |
+        Returns server status and whether the Reactive Contract on Lasna is sufficiently funded.
+        If `reactiveContractFunded` is false, new protection configs will be rejected (503) because
+        the monitoring callbacks won't fire.
+      responses:
+        "200":
+          description: Server is healthy or degraded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/services:
+    get:
+      operationId: listServices
+      tags: [Discovery]
+      summary: List available services and pricing
+      description: |
+        Returns the full service catalog with pricing details. Use this to discover what
+        protection services are available and their per-day costs before purchasing.
+        No payment required.
+      responses:
+        "200":
+          description: Service catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServicesResponse"
+
+  /api/quote:
+    post:
+      operationId: getQuote
+      tags: [Discovery]
+      summary: Get exact price quote for a service
+      description: |
+        Returns the exact USDC price (in base units, 6 decimals) for a given service and duration.
+        Price includes a 20% gas buffer on top of the base rate.
+
+        Base rate: $0.25/day for `aave-protection`.
+
+        Use this before calling the protected endpoint so you know exactly how much USDC to authorize.
+        No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuoteRequest"
+            examples:
+              oneDay:
+                summary: Quote for 1 day
+                value:
+                  service: aave-protection
+                  durationSeconds: 86400
+              sevenDays:
+                summary: Quote for 7 days
+                value:
+                  service: aave-protection
+                  durationSeconds: 604800
+      responses:
+        "200":
+          description: Price quote
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteResponse"
+        "400":
+          description: Invalid service ID or duration out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/protect/liquidation:
+    post:
+      operationId: createLiquidationProtection
+      tags: [Protection]
+      summary: Create Aave liquidation protection (x402-gated)
+      description: |
+        Creates an on-chain protection configuration. The Reactive Contract will then monitor
+        the protected user's Aave health factor every ~12 minutes and execute protection
+        (collateral deposit, debt repayment, or both) when it drops below the threshold.
+
+        **This endpoint requires x402 payment in USDC on Base Sepolia (eip155:84532).**
+
+        ### Without payment
+        Returns `402 Payment Required` with an `accepts` array describing how to pay.
+        The price is dynamic — computed from the `duration` field in the request body.
+
+        ### With payment
+        Attach the signed EIP-3009 authorization as the `X-PAYMENT` header (base64-encoded JSON).
+        On success, returns the `configId` and the AaveProtectionCallback address that needs
+        token approval before protection can execute.
+
+        ### After creation
+        You MUST approve the `AaveProtectionCallback` contract to spend:
+        - `collateralAsset` tokens (for collateral deposit mode)
+        - `debtAsset` tokens (for debt repayment mode)
+        Both if `protectionType` is `2` (BOTH).
+
+        ### Protection types
+        | Value | Name | Description |
+        |-------|------|-------------|
+        | 0 | COLLATERAL_DEPOSIT | Supplies collateral to Aave to raise HF |
+        | 1 | DEBT_REPAYMENT | Repays debt to raise HF |
+        | 2 | BOTH | Tries collateral first, falls back to debt repayment |
+
+        ### Health factor encoding
+        Health factors are WAD-encoded (18 decimals). Examples:
+        - `1.5 HF` → `"1500000000000000000"`
+        - `2.0 HF` → `"2000000000000000000"`
+      security:
+        - x402: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProtectionRequest"
+            examples:
+              defaultProtection:
+                summary: Protect with collateral deposit, 1 day
+                value:
+                  protectedUser: "0xYourWalletAddress"
+                  protectionType: 0
+                  healthFactorThreshold: "1500000000000000000"
+                  targetHealthFactor: "2000000000000000000"
+                  collateralAsset: "0x4200000000000000000000000000000000000006"
+                  debtAsset: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+                  preferDebtRepayment: false
+                  duration: 86400
+      responses:
+        "200":
+          description: Protection config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateProtectionResponse"
+        "400":
+          description: Invalid request parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "402":
+          description: Payment required — attach x402 payment header and retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentRequiredResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Reactive Contract underfunded — service temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/protect/liquidation/pause:
+    post:
+      operationId: pauseLiquidationProtection
+      tags: [Protection]
+      summary: Pause a protection config
+      description: |
+        Pauses an active protection config. While paused, the Reactive Contract will skip
+        health factor checks for this config. No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/protect/liquidation/resume:
+    post:
+      operationId: resumeLiquidationProtection
+      tags: [Protection]
+      summary: Resume a paused protection config
+      description: |
+        Resumes a previously paused protection config. Health factor monitoring will
+        resume on the next Reactive callback cycle (~12 minutes). No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/protect/liquidation/cancel:
+    post:
+      operationId: cancelLiquidationProtection
+      tags: [Protection]
+      summary: Cancel a protection config permanently
+      description: |
+        Permanently cancels a protection config. This action is irreversible — a cancelled
+        config cannot be resumed. No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/status/config/{configId}:
+    get:
+      operationId: getProtectionConfig
+      tags: [Status]
+      summary: Get protection config details
+      description: |
+        Fetches the on-chain state of a protection config including its current status,
+        execution history, and all configuration parameters. No payment required.
+      parameters:
+        - name: configId
+          in: path
+          required: true
+          description: The numeric config ID returned when the config was created
+          schema:
+            type: integer
+            minimum: 0
+          example: 42
+      responses:
+        "200":
+          description: Config details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProtectionConfigResponse"
+        "400":
+          description: Invalid config ID format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/status/health/{userAddress}:
+    get:
+      operationId: getHealthFactor
+      tags: [Status]
+      summary: Get current Aave health factor for a user
+      description: |
+        Returns the current Aave health factor for a given wallet address on Base Sepolia.
+        Health factor is read directly from the Aave lending pool via the callback contract.
+
+        - `healthFactorDecimal` is null when the user has no Aave position.
+        - `atRisk` is true when the health factor is below 1.5.
+        - A health factor below 1.0 means the position is liquidatable.
+
+        No payment required.
+      parameters:
+        - name: userAddress
+          in: path
+          required: true
+          description: EVM wallet address (checksummed or lowercase)
+          schema:
+            type: string
+            pattern: "^0x[a-fA-F0-9]{40}$"
+          example: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+      responses:
+        "200":
+          description: Current health factor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthFactorResponse"
+        "400":
+          description: Invalid address format
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/status/configs:
+    get:
+      operationId: listActiveConfigs
+      tags: [Status]
+      summary: List all active protection config IDs
+      description: |
+        Returns all currently active (non-cancelled, non-paused) protection config IDs
+        from the on-chain contract. No payment required.
+      responses:
+        "200":
+          description: List of active config IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActiveConfigsResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    x402:
+      type: apiKey
+      in: header
+      name: X-PAYMENT
+      description: |
+        Base64-encoded JSON containing a signed EIP-3009 `transferWithAuthorization`
+        over USDC on Base Sepolia. Signed locally by the agent's private key using the
+        x402 SDK — no separate facilitator call needed by the client. The facilitator
+        is called server-side to verify and settle the payment.
+        See https://x402.org/docs for SDK helpers (`@x402/fetch`, `@x402/evm`).
+
+  schemas:
+    # ── Request schemas ──────────────────────────────────────────────────────────
+
+    QuoteRequest:
+      type: object
+      required: [service, durationSeconds]
+      properties:
+        service:
+          type: string
+          description: Service ID from the catalog
+          enum: [aave-protection]
+          example: aave-protection
+        durationSeconds:
+          type: integer
+          description: Desired protection duration in seconds (min 3600, max 2592000)
+          minimum: 3600
+          maximum: 2592000
+          example: 86400
+
+    CreateProtectionRequest:
+      type: object
+      required:
+        - protectedUser
+        - protectionType
+        - healthFactorThreshold
+        - targetHealthFactor
+      properties:
+        protectedUser:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: Wallet address whose Aave position to protect
+          example: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        protectionType:
+          type: integer
+          enum: [0, 1, 2]
+          description: |
+            Protection strategy:
+            - `0` = COLLATERAL_DEPOSIT — supply more collateral to raise HF
+            - `1` = DEBT_REPAYMENT — repay debt to raise HF
+            - `2` = BOTH — try collateral first, fall back to debt repayment
+          example: 0
+        healthFactorThreshold:
+          type: string
+          pattern: "^\\d+$"
+          description: |
+            Health factor trigger threshold in WAD (18 decimals).
+            Protection fires when HF drops below this value.
+            Example: "1500000000000000000" = 1.5 HF
+          example: "1500000000000000000"
+        targetHealthFactor:
+          type: string
+          pattern: "^\\d+$"
+          description: |
+            Target health factor after protection in WAD (18 decimals).
+            The contract will supply/repay enough to reach this level.
+            Example: "2000000000000000000" = 2.0 HF
+          example: "2000000000000000000"
+        collateralAsset:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: |
+            ERC-20 address of collateral to supply (used for protectionType 0 or 2).
+            Defaults to WETH on Base Sepolia: `0x4200000000000000000000000000000000000006`
+          default: "0x4200000000000000000000000000000000000006"
+          example: "0x4200000000000000000000000000000000000006"
+        debtAsset:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: |
+            ERC-20 address of debt token to repay (used for protectionType 1 or 2).
+            Defaults to USDC on Base Sepolia: `0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f` (Aave's USDC on Base Sepolia — different from x402 payment USDC)
+          default: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+          example: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+        preferDebtRepayment:
+          type: boolean
+          description: |
+            When protectionType is BOTH (2), prefer debt repayment over collateral deposit.
+            Has no effect for protectionType 0 or 1.
+          default: false
+          example: false
+        duration:
+          type: integer
+          description: |
+            Protection duration in seconds. Determines the x402 payment amount.
+            Min: 3600 (1 hour), Max: 2592000 (30 days). Defaults to 86400 (1 day).
+          minimum: 3600
+          maximum: 2592000
+          default: 86400
+          example: 86400
+
+    ConfigIdRequest:
+      type: object
+      required: [configId]
+      properties:
+        configId:
+          type: integer
+          minimum: 0
+          description: Numeric protection config ID
+          example: 42
+
+    # ── Response schemas ─────────────────────────────────────────────────────────
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, error]
+          description: "`ok` = fully operational, `degraded` = RC underfunded, `error` = unreachable"
+          example: ok
+        reactiveContractBalance:
+          type: string
+          description: REACT balance of the Reactive Contract on Lasna (in wei), or "unreachable"
+          example: "50000000000000000"
+        reactiveContractFunded:
+          oneOf:
+            - type: boolean
+            - type: string
+              enum: [unknown]
+          description: Whether the RC has enough REACT for callbacks to fire (min 0.01 REACT)
+          example: true
+
+    ServicesResponse:
+      type: object
+      properties:
+        services:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceCatalogEntry"
+
+    ServiceCatalogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+          example: aave-protection
+        name:
+          type: string
+          example: Aave Liquidation Protection
+        description:
+          type: string
+        trigger:
+          type: string
+          example: "Aave Health Factor < threshold"
+        action:
+          type: string
+          example: "Supply collateral, repay debt, or both on your behalf"
+        pricing:
+          type: object
+          properties:
+            perDay:
+              type: string
+              description: Human-readable price per day
+              example: "$0.25"
+            perDayBaseUnits:
+              type: integer
+              description: Price per day in USDC base units (6 decimals)
+              example: 250000
+            example1Day:
+              type: string
+              description: Total price for 1 day (with gas buffer)
+              example: "$0.3"
+            example7Days:
+              type: string
+              description: Total price for 7 days (with gas buffer)
+              example: "$2.1"
+        limits:
+          type: object
+          properties:
+            minDurationSeconds:
+              type: integer
+              example: 3600
+            maxDurationSeconds:
+              type: integer
+              example: 2592000
+        network:
+          type: string
+          description: CAIP-2 network identifier
+          example: eip155:84532
+        status:
+          type: string
+          example: live
+
+    QuoteResponse:
+      type: object
+      properties:
+        service:
+          type: string
+          example: aave-protection
+        durationSeconds:
+          type: integer
+          example: 86400
+        price:
+          type: string
+          description: Human-readable total price
+          example: "$0.3"
+        priceBaseUnits:
+          type: string
+          description: Total price in USDC base units (6 decimals) — use this for EIP-3009 authorization
+          example: "300000"
+        currency:
+          type: string
+          example: USDC
+        network:
+          type: string
+          example: eip155:84532
+
+    CreateProtectionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        configId:
+          type: string
+          description: Numeric ID of the newly created on-chain config (store this for management)
+          example: "42"
+        txHash:
+          type: string
+          description: Base Sepolia transaction hash for the config creation
+          example: "0xabc123..."
+        protectedUser:
+          type: string
+          example: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        protectionType:
+          type: integer
+          example: 0
+        healthFactorThreshold:
+          type: string
+          example: "1500000000000000000"
+        targetHealthFactor:
+          type: string
+          example: "2000000000000000000"
+        collateralAsset:
+          type: string
+          example: "0x4200000000000000000000000000000000000006"
+        debtAsset:
+          type: string
+          example: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+        preferDebtRepayment:
+          type: boolean
+          example: false
+        message:
+          type: string
+          description: Human-readable status message
+          example: "Protection config #42 active. Health factor monitored every ~12 min."
+        nextSteps:
+          type: array
+          items:
+            type: string
+          description: Required follow-up actions (token approvals)
+
+    ConfigActionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        configId:
+          type: integer
+          example: 42
+        txHash:
+          type: string
+          description: Base Sepolia transaction hash
+          example: "0xabc123..."
+        action:
+          type: string
+          enum: [paused, resumed, cancelled]
+          example: paused
+
+    ProtectionConfigResponse:
+      type: object
+      properties:
+        configId:
+          type: string
+          example: "42"
+        protectedUser:
+          type: string
+          example: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        protectionType:
+          type: integer
+          enum: [0, 1, 2]
+          description: "0=COLLATERAL_DEPOSIT, 1=DEBT_REPAYMENT, 2=BOTH"
+          example: 0
+        healthFactorThreshold:
+          type: string
+          description: WAD-encoded HF trigger threshold
+          example: "1500000000000000000"
+        targetHealthFactor:
+          type: string
+          description: WAD-encoded target HF after protection
+          example: "2000000000000000000"
+        collateralAsset:
+          type: string
+          example: "0x4200000000000000000000000000000000000006"
+        debtAsset:
+          type: string
+          example: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+        preferDebtRepayment:
+          type: boolean
+          example: false
+        status:
+          type: string
+          enum: [Active, Paused, Cancelled]
+          example: Active
+        createdAt:
+          type: integer
+          description: Unix timestamp of config creation
+          example: 1710000000
+        lastExecutedAt:
+          type: integer
+          description: Unix timestamp of last successful protection execution (0 if never)
+          example: 0
+        executionCount:
+          type: integer
+          description: Total number of times protection has been triggered and executed
+          example: 0
+        consecutiveFailures:
+          type: integer
+          description: Number of consecutive failed execution attempts
+          example: 0
+
+    HealthFactorResponse:
+      type: object
+      properties:
+        userAddress:
+          type: string
+          example: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        healthFactor:
+          type: string
+          description: WAD-encoded health factor, or "MAX" if no Aave position
+          example: "1850000000000000000"
+        healthFactorDecimal:
+          type: string
+          nullable: true
+          description: Human-readable health factor (4 decimal places), null if no position
+          example: "1.8500"
+        atRisk:
+          type: boolean
+          description: True when health factor is below 1.5
+          example: false
+        noAavePosition:
+          type: boolean
+          description: True when the user has no active Aave position on Base Sepolia
+          example: false
+
+    ActiveConfigsResponse:
+      type: object
+      properties:
+        activeConfigIds:
+          type: array
+          items:
+            type: string
+          description: String-encoded config IDs that are currently active
+          example: ["1", "5", "42"]
+        count:
+          type: integer
+          description: Total number of active configs
+          example: 3
+
+    PaymentRequiredResponse:
+      type: object
+      description: x402 payment required response. Attach payment to X-PAYMENT header and retry.
+      properties:
+        x402Version:
+          type: integer
+          example: 2
+        accepts:
+          type: array
+          description: Supported payment options
+          items:
+            type: object
+            properties:
+              scheme:
+                type: string
+                example: exact
+              network:
+                type: string
+                example: eip155:84532
+              payTo:
+                type: string
+                description: Recipient wallet address
+                example: "0xServerWallet..."
+              amount:
+                type: string
+                description: Required USDC amount in base units (6 decimals)
+                example: "300000"
+              asset:
+                type: string
+                description: USDC token address on Base Sepolia
+                example: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+              extra:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    example: USDC
+                  version:
+                    type: string
+                    example: "2"
+        error:
+          type: string
+          example: "Payment required"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
+          example: "On-chain config creation failed"
+        reason:
+          type: string
+          description: Detailed reason (often from the on-chain revert)
+          example: "execution reverted: insufficient balance"
+
+    ValidationErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "Invalid parameters"
+        details:
+          type: object
+          description: Per-field validation errors
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          example:
+            protectedUser: ["Invalid address format"]
+            protectionType: ["Expected number, received string"]
