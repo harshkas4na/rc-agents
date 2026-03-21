@@ -33,7 +33,7 @@ import { lasnaClient } from "./chain";
 const UNISWAP_V3_ROUTER = "0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4" as Address;
 const USDC_ADDRESS = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as Address;
 const WETH_ADDRESS = "0x4200000000000000000000000000000000000006" as Address;
-const POOL_FEE = 500; // 0.05%
+const POOL_FEE = 3000; // 0.3% — the active USDC/WETH pool on Base Sepolia
 
 /** Fraction of payment that goes to swap (rest is server margin). BPS. */
 const SWAP_ALLOCATION_BPS = 8000n; // 80% goes to ETH
