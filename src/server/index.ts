@@ -730,10 +730,18 @@ app.get("/health", async (_req: Request, res: Response) => {
     const rcBalance = await getReactiveBalance().catch(() => -1n);
     const rcFunded = rcBalance >= MIN_RC_BALANCE;
 
-    const dcaRcBalance = await getDCAReactiveBalance().catch(() => -1n);
-    const dcaRcFunded = dcaRcBalance >= MIN_RC_BALANCE;
+    let dcaRcBalance = -1n;
+    let dcaRcFunded = false;
+    let dcaConfigured = true;
+    try {
+      dcaRcBalance = await getDCAReactiveBalance();
+      dcaRcFunded = dcaRcBalance >= MIN_RC_BALANCE;
+    } catch {
+      // DCA contracts may not be deployed yet — don't fail the health check
+      dcaConfigured = false;
+    }
 
-    const allFunded = rcFunded && dcaRcFunded;
+    const allFunded = rcFunded && (dcaRcFunded || !dcaConfigured);
 
     res.json({
       status: allFunded ? "ok" : "degraded",
@@ -741,10 +749,12 @@ app.get("/health", async (_req: Request, res: Response) => {
         reactiveContractBalance: rcBalance >= 0n ? rcBalance.toString() : "unreachable",
         reactiveContractFunded: rcBalance >= 0n ? rcFunded : "unknown",
       },
-      dcaStrategy: {
-        reactiveContractBalance: dcaRcBalance >= 0n ? dcaRcBalance.toString() : "unreachable",
-        reactiveContractFunded: dcaRcBalance >= 0n ? dcaRcFunded : "unknown",
-      },
+      dcaStrategy: dcaConfigured
+        ? {
+            reactiveContractBalance: dcaRcBalance >= 0n ? dcaRcBalance.toString() : "unreachable",
+            reactiveContractFunded: dcaRcBalance >= 0n ? dcaRcFunded : "unknown",
+          }
+        : { status: "not configured" },
     });
   } catch (err: any) {
     res.status(503).json({ status: "error", reason: err.message });
