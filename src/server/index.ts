@@ -16,6 +16,8 @@
  */
 
 import "dotenv/config";
+import path from "path";
+import fs from "fs";
 import express, { type Request, type Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -490,6 +492,18 @@ app.get("/health", async (_req: Request, res: Response) => {
   } catch (err: any) {
     res.status(503).json({ status: "error", reason: err.message });
   }
+});
+
+// ── OpenAPI spec ──────────────────────────────────────────────────────────────
+
+app.get("/openapi.yaml", (_req: Request, res: Response) => {
+  const specPath = path.resolve(__dirname, "../../openapi.yaml");
+  if (!fs.existsSync(specPath)) {
+    res.status(404).json({ error: "Spec not found" });
+    return;
+  }
+  res.setHeader("Content-Type", "text/yaml; charset=utf-8");
+  res.send(fs.readFileSync(specPath, "utf-8"));
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
