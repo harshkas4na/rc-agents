@@ -11,6 +11,7 @@
  *   GET  /api/status/config/:configId          → config details (free)
  *   GET  /api/status/health/:userAddress       → health factor (free)
  *   GET  /api/status/configs                   → all active configs (free)
+ *   POST /api/approve/permit                   → relay EIP-2612 permit (free, for HTTP-only agents)
  *   GET  /health                               → server health (free)
  */
 
@@ -39,10 +40,11 @@ import {
   getActiveConfigs,
   getHealthFactor,
   getReactiveBalance,
+  getWalletClient,
   MIN_RC_BALANCE,
 } from "./chain";
 import { fundRCGasPool } from "./bridge";
-import type { Address } from "viem";
+import { parseAbi, type Address } from "viem";
 
 const app = express();
 app.use(helmet());
@@ -238,11 +240,12 @@ app.post("/api/protect/liquidation", async (req: Request, res: Response) => {
       collateralAsset: params.collateralAsset as Address,
       debtAsset: params.debtAsset as Address,
       preferDebtRepayment: params.preferDebtRepayment,
+      duration: BigInt(params.duration),
     });
 
     // Fund RC gas pool from payment
     const price = computePrice("aave-protection", params.duration);
-    await fundRCGasPool(price);
+    await fundRCGasPool(price, params.duration);
 
     const callbackAddress = process.env.AAVE_PROTECTION_CALLBACK_ADDRESS;
 
@@ -347,6 +350,7 @@ app.get("/api/status/config/:configId", async (req: Request, res: Response) => {
       preferDebtRepayment: config.preferDebtRepayment,
       status: statusLabels[config.status] ?? "Unknown",
       createdAt: Number(config.createdAt),
+      expiresAt: config.expiresAt > 0n ? Number(config.expiresAt) : null,
       lastExecutedAt: Number(config.lastExecutedAt),
       executionCount: config.executionCount,
       consecutiveFailures: config.consecutiveFailures,
@@ -401,6 +405,73 @@ app.get("/api/status/configs", async (_req: Request, res: Response) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to fetch active configs", reason: err.message });
+  }
+});
+
+// ── EIP-2612 permit relay ─────────────────────────────────────────────────────
+
+const ERC20_PERMIT_ABI = parseAbi([
+  "function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external",
+  "function allowance(address owner, address spender) external view returns (uint256)",
+]);
+
+const permitSchema = z.object({
+  token: z.string().regex(addressRegex),
+  owner: z.string().regex(addressRegex),
+  spender: z.string().regex(addressRegex),
+  value: z.string().regex(/^\d+$/),
+  deadline: z.number().int().positive(),
+  v: z.number().int().min(0).max(255),
+  r: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
+  s: z.string().regex(/^0x[a-fA-F0-9]{64}$/),
+});
+
+/**
+ * POST /api/approve/permit
+ *
+ * Relay an EIP-2612 permit signature on-chain (server pays gas).
+ * Only works for tokens that support EIP-2612 (USDC — NOT WETH).
+ * This is free: the fee is already included in the protection service price.
+ *
+ * HTTP-only agents use this to grant the CC a spending allowance without
+ * needing to submit an EVM transaction themselves.
+ */
+app.post("/api/approve/permit", async (req: Request, res: Response) => {
+  const result = permitSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid parameters", details: result.error.flatten().fieldErrors });
+    return;
+  }
+
+  const { token, owner, spender, value, deadline, v, r, s } = result.data;
+
+  // Only allow permit for known USDC tokens — block WETH (no permit support)
+  const WETH = WETH_BASE_SEPOLIA.toLowerCase();
+  if (token.toLowerCase() === WETH) {
+    res.status(400).json({
+      error: "WETH does not support EIP-2612 permit",
+      hint: "Use protectionType=1 (DEBT_REPAYMENT) with USDC, or submit an EVM approval transaction for WETH.",
+    });
+    return;
+  }
+
+  try {
+    const walletClient = getWalletClient();
+    const txHash = await walletClient.writeContract({
+      address: token as Address,
+      abi: ERC20_PERMIT_ABI,
+      functionName: "permit",
+      args: [owner as Address, spender as Address, BigInt(value), BigInt(deadline), v, r as `0x${string}`, s as `0x${string}`],
+    });
+
+    console.log(`[permit] Relayed permit for owner=${owner} spender=${spender} value=${value} tx=${txHash}`);
+    res.json({ success: true, txHash });
+  } catch (err: any) {
+    console.error("[permit] Failed:", err);
+    res.status(500).json({
+      error: "Permit relay failed",
+      reason: err?.shortMessage ?? err?.message ?? "Unknown error",
+    });
   }
 });
 

@@ -98,6 +98,8 @@ export interface CreateProtectionParams {
   collateralAsset: Address;
   debtAsset: Address;
   preferDebtRepayment: boolean;
+  /** Duration in seconds; protection auto-expires after this. 0 = no expiry. */
+  duration: bigint;
 }
 
 /**
@@ -130,6 +132,7 @@ export async function createProtectionConfig(
       params.collateralAsset,
       params.debtAsset,
       params.preferDebtRepayment,
+      params.duration,
     ],
   });
 
@@ -222,6 +225,7 @@ export interface ProtectionConfigData {
   preferDebtRepayment: boolean;
   status: number;
   createdAt: bigint;
+  expiresAt: bigint;
   lastExecutedAt: bigint;
   executionCount: number;
   consecutiveFailures: number;
@@ -251,10 +255,11 @@ export async function getProtectionConfig(configId: bigint): Promise<ProtectionC
     preferDebtRepayment: Boolean(r[7] ?? r.preferDebtRepayment),
     status: Number(r[8] ?? r.status),
     createdAt: BigInt(r[9] ?? r.createdAt),
-    lastExecutedAt: BigInt(r[10] ?? r.lastExecutedAt),
-    executionCount: Number(r[11] ?? r.executionCount),
-    consecutiveFailures: Number(r[12] ?? r.consecutiveFailures),
-    lastExecutionAttempt: BigInt(r[13] ?? r.lastExecutionAttempt),
+    expiresAt: BigInt(r[10] ?? r.expiresAt ?? 0),
+    lastExecutedAt: BigInt(r[11] ?? r.lastExecutedAt),
+    executionCount: Number(r[12] ?? r.executionCount),
+    consecutiveFailures: Number(r[13] ?? r.consecutiveFailures),
+    lastExecutionAttempt: BigInt(r[14] ?? r.lastExecutionAttempt),
   };
 }
 

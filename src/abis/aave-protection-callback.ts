@@ -14,7 +14,7 @@ import { parseAbi } from "viem";
 
 export const AAVE_PROTECTION_CALLBACK_ABI = parseAbi([
   // ── Owner-called (server creates/manages configs after x402 payment) ──
-  "function createProtectionConfig(address protectedUser, uint8 protectionType, uint256 healthFactorThreshold, uint256 targetHealthFactor, address collateralAsset, address debtAsset, bool preferDebtRepayment) external returns (uint256)",
+  "function createProtectionConfig(address protectedUser, uint8 protectionType, uint256 healthFactorThreshold, uint256 targetHealthFactor, address collateralAsset, address debtAsset, bool preferDebtRepayment, uint256 duration) external returns (uint256)",
 
   // ── Callback target (called by RC via Reactive Network) ───────────────
   // address sender IS the first param (RVM ID slot, injected by RN)
@@ -27,7 +27,7 @@ export const AAVE_PROTECTION_CALLBACK_ABI = parseAbi([
 
   // ── Views ─────────────────────────────────────────────────────────────
   "function getCurrentHealthFactor(address user) external view returns (uint256)",
-  "function protectionConfigs(uint256) external view returns (uint256 id, address protectedUser, uint8 protectionType, uint256 healthFactorThreshold, uint256 targetHealthFactor, address collateralAsset, address debtAsset, bool preferDebtRepayment, uint8 status, uint256 createdAt, uint256 lastExecutedAt, uint8 executionCount, uint8 consecutiveFailures, uint256 lastExecutionAttempt)",
+  "function protectionConfigs(uint256) external view returns (uint256 id, address protectedUser, uint8 protectionType, uint256 healthFactorThreshold, uint256 targetHealthFactor, address collateralAsset, address debtAsset, bool preferDebtRepayment, uint8 status, uint256 createdAt, uint256 expiresAt, uint256 lastExecutedAt, uint8 executionCount, uint8 consecutiveFailures, uint256 lastExecutionAttempt)",
   "function getActiveConfigs() external view returns (uint256[])",
   "function getAllConfigs() external view returns (uint256[])",
   "function getAssetPrice(address asset) external view returns (uint256)",

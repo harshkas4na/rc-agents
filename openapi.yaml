@@ -412,6 +412,70 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/approve/permit:
+    post:
+      operationId: relayPermit
+      tags: [Protection]
+      summary: Relay an EIP-2612 permit signature on-chain (free)
+      description: |
+        HTTP-only agents (e.g. OpenClaw-style) can pay via x402 but cannot submit EVM transactions
+        to approve the callback contract to spend their tokens. This endpoint accepts a pre-signed
+        EIP-2612 permit and relays it on-chain — the server pays the Base Sepolia gas.
+
+        **Only works for EIP-2612 tokens (USDC). WETH does not support permit.**
+
+        This endpoint is free — no x402 payment needed. The fee is already included in the
+        protection service price.
+
+        ### Typical HTTP-only agent flow
+        1. `GET /api/services` — discover service and CC address
+        2. `POST /api/quote` — get price for duration
+        3. Sign EIP-2612 `permit(owner, CC_address, amount, deadline)` off-chain
+        4. `POST /api/approve/permit` — relay the permit (this endpoint)
+        5. `POST /api/protect/liquidation` (with x402 payment) — register protection
+
+        ### Limitation
+        HTTP-only agents can only use `protectionType: 1` (DEBT_REPAYMENT with Aave USDC).
+        `protectionType: 0` (COLLATERAL_DEPOSIT with WETH) requires a direct EVM approval
+        transaction because WETH has no permit support.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PermitRequest"
+            examples:
+              usdcPermit:
+                summary: Permit Aave USDC spend for debt repayment
+                value:
+                  token: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+                  owner: "0xYourWalletAddress"
+                  spender: "0xAaveProtectionCallbackAddress"
+                  value: "1000000000"
+                  deadline: 1712000000
+                  v: 27
+                  r: "0xabc123..."
+                  s: "0xdef456..."
+      responses:
+        "200":
+          description: Permit relayed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PermitResponse"
+        "400":
+          description: Invalid parameters or WETH address provided
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain permit transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /api/status/configs:
     get:
       operationId: listActiveConfigs
@@ -756,6 +820,11 @@ components:
           type: integer
           description: Unix timestamp of config creation
           example: 1710000000
+        expiresAt:
+          type: integer
+          nullable: true
+          description: Unix timestamp when the protection auto-expires, or null if no expiry
+          example: 1710086400
         lastExecutedAt:
           type: integer
           description: Unix timestamp of last successful protection execution (0 if never)
@@ -862,6 +931,62 @@ components:
           type: string
           description: Detailed reason (often from the on-chain revert)
           example: "execution reverted: insufficient balance"
+
+    PermitRequest:
+      type: object
+      required: [token, owner, spender, value, deadline, v, r, s]
+      properties:
+        token:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: ERC-20 token address (must support EIP-2612; USDC only — not WETH)
+          example: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"
+        owner:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: Agent wallet address (the token holder signing the permit)
+          example: "0xYourWalletAddress"
+        spender:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: Address being approved — should be the AaveProtectionCallback address
+          example: "0x24df0bBC9c4b95e8643848EC6B7f0Ac638BD3476"
+        value:
+          type: string
+          pattern: "^\\d+$"
+          description: Amount of tokens to approve (in base units, bigint as string)
+          example: "1000000000"
+        deadline:
+          type: integer
+          description: Unix timestamp after which the permit is invalid
+          example: 1712000000
+        v:
+          type: integer
+          minimum: 0
+          maximum: 255
+          description: ECDSA signature v component
+          example: 27
+        r:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{64}$"
+          description: ECDSA signature r component (32 bytes hex)
+          example: "0xabc123..."
+        s:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{64}$"
+          description: ECDSA signature s component (32 bytes hex)
+          example: "0xdef456..."
+
+    PermitResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        txHash:
+          type: string
+          description: Base Sepolia transaction hash of the permit call
+          example: "0xabc123..."
 
     ValidationErrorResponse:
       type: object

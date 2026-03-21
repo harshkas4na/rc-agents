@@ -125,6 +125,7 @@ contract AaveProtectionCallback is AbstractCallback, RescuableBase {
         bool preferDebtRepayment;
         ProtectionStatus status;
         uint256 createdAt;
+        uint256 expiresAt;          // unix timestamp when protection ends (0 = never)
         uint256 lastExecutedAt;
         uint8 executionCount;
         uint8 consecutiveFailures;
@@ -215,6 +216,7 @@ contract AaveProtectionCallback is AbstractCallback, RescuableBase {
      * @param _collateralAsset Asset to use for collateral deposits
      * @param _debtAsset Asset to use for debt repayment
      * @param _preferDebtRepayment If BOTH type, which method to prefer
+     * @param _duration Seconds the protection should remain active (0 = no expiry)
      */
     function createProtectionConfig(
         address _protectedUser,
@@ -223,7 +225,8 @@ contract AaveProtectionCallback is AbstractCallback, RescuableBase {
         uint256 _targetHealthFactor,
         address _collateralAsset,
         address _debtAsset,
-        bool _preferDebtRepayment
+        bool _preferDebtRepayment,
+        uint256 _duration
     ) external onlyOwner returns (uint256) {
         require(_protectedUser != address(0), "Invalid protected user");
         require(
@@ -260,6 +263,7 @@ contract AaveProtectionCallback is AbstractCallback, RescuableBase {
                 preferDebtRepayment: _preferDebtRepayment,
                 status: ProtectionStatus.Active,
                 createdAt: block.timestamp,
+                expiresAt: _duration > 0 ? block.timestamp + _duration : 0,
                 lastExecutedAt: 0,
                 executionCount: 0,
                 consecutiveFailures: 0,
@@ -295,6 +299,13 @@ contract AaveProtectionCallback is AbstractCallback, RescuableBase {
             ProtectionConfig storage config = protectionConfigs[i];
 
             if (config.status != ProtectionStatus.Active) {
+                continue;
+            }
+
+            // Auto-expire: cancel if past expiry
+            if (config.expiresAt > 0 && block.timestamp > config.expiresAt) {
+                config.status = ProtectionStatus.Cancelled;
+                emit ProtectionCancelled(i);
                 continue;
             }
 
