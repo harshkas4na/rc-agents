@@ -1,7 +1,7 @@
 /**
- * index.ts — x402 Aave Protection API
+ * index.ts — x402 Automation Marketplace API
  *
- * Endpoints:
+ * Aave Protection endpoints:
  *   GET  /api/services                         → service catalog + pricing (free)
  *   POST /api/quote                            → exact price estimate (free)
  *   POST /api/protect/liquidation              → [402-gated] create protection config
@@ -12,6 +12,17 @@
  *   GET  /api/status/health/:userAddress       → health factor (free)
  *   GET  /api/status/configs                   → all active configs (free)
  *   POST /api/approve/permit                   → relay EIP-2612 permit (free, for HTTP-only agents)
+ *
+ * DCA Strategy endpoints:
+ *   POST /api/dca/activate                     → [402-gated] fund DCA automation + get instructions
+ *   POST /api/dca/pause                        → pause a DCA config (free, admin)
+ *   POST /api/dca/resume                       → resume a DCA config (free, admin)
+ *   POST /api/dca/cancel                       → cancel a DCA config (free, admin)
+ *   GET  /api/dca/config/:configId             → DCA config details (free)
+ *   GET  /api/dca/configs                      → all active DCA configs (free)
+ *   GET  /api/dca/user/:userAddress            → DCA configs for a user (free)
+ *
+ * General:
  *   GET  /health                               → server health (free)
  */
 
@@ -44,6 +55,14 @@ import {
   getReactiveBalance,
   getWalletClient,
   MIN_RC_BALANCE,
+  createDCAConfig,
+  getDCAConfig,
+  getActiveDCAConfigs,
+  getUserDCAConfigs,
+  pauseDCAConfig,
+  resumeDCAConfig,
+  cancelDCAConfig,
+  getDCAReactiveBalance,
 } from "./chain";
 import { fundRCGasPool } from "./bridge";
 import { parseAbi, type Address } from "viem";
@@ -77,15 +96,10 @@ const routes: RoutesConfig = {
       network: NETWORK,
       payTo: PAYMENT_RECIPIENT,
       price: async (context: any) => {
-        // Dynamic pricing: try to parse duration from request body
-        // Default to 1 day if not available at pricing time
         const body = context.adapter?.getBody?.() ?? {};
         const duration = parseInt(body.duration ?? "86400", 10);
         const clampedDuration = Math.max(3600, Math.min(2592000, isNaN(duration) ? 86400 : duration));
         const priceBaseUnits = computePrice("aave-protection", clampedDuration);
-        // Return full AssetAmount with EIP-712 domain info so client can sign EIP-3009.
-        // The library skips defaultMoneyConversion (which adds name/version) when
-        // given an AssetAmount object — we must include extra fields manually.
         return {
           asset: USDC_BASE_SEPOLIA,
           amount: priceBaseUnits.toString(),
@@ -94,6 +108,25 @@ const routes: RoutesConfig = {
       },
     },
     description: "Aave Liquidation Protection — monitors health factor, supplies collateral or repays debt on trigger",
+  },
+  "POST /api/dca/activate": {
+    accepts: {
+      scheme: "exact",
+      network: NETWORK,
+      payTo: PAYMENT_RECIPIENT,
+      price: async (context: any) => {
+        const body = context.adapter?.getBody?.() ?? {};
+        const duration = parseInt(body.duration ?? "86400", 10);
+        const clampedDuration = Math.max(3600, Math.min(2592000, isNaN(duration) ? 86400 : duration));
+        const priceBaseUnits = computePrice("dca-strategy", clampedDuration);
+        return {
+          asset: USDC_BASE_SEPOLIA,
+          amount: priceBaseUnits.toString(),
+          extra: { name: "USDC", version: "2" },
+        };
+      },
+    },
+    description: "DCA Strategy Activation — pays for Reactive Network automation gas to run periodic Uniswap V3 swaps",
   },
 };
 
@@ -477,6 +510,219 @@ app.post("/api/approve/permit", async (req: Request, res: Response) => {
   }
 });
 
+// ── DCA Strategy endpoints ────────────────────────────────────────────────────
+
+const dcaCreateSchema = z.object({
+  user: z.string().regex(addressRegex),
+  tokenIn: z.string().regex(addressRegex),
+  tokenOut: z.string().regex(addressRegex),
+  amountPerSwap: z.string().regex(/^\d+$/),
+  poolFee: z.number().int().refine((v) => v === 500 || v === 3000 || v === 10000, {
+    message: "Pool fee must be 500, 3000, or 10000",
+  }),
+  totalSwaps: z.number().int().min(0).default(0),
+  swapInterval: z.number().int().min(60).default(720),
+  minAmountOut: z.string().regex(/^\d+$/).default("0"),
+  duration: z.number().int().min(3600).max(2592000).default(86400),
+});
+
+/**
+ * POST /api/dca/activate — [402-gated]
+ *
+ * Agent pays via x402, server creates DCA config on-chain and funds the
+ * DCA Reactive Contract. Works identically to /api/protect/liquidation.
+ */
+app.post("/api/dca/activate", async (req: Request, res: Response) => {
+  const result = dcaCreateSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({
+      error: "Invalid parameters",
+      details: result.error.flatten().fieldErrors,
+    });
+    return;
+  }
+
+  const params = result.data;
+
+  // Check DCA RC balance before creating config
+  try {
+    const rcBalance = await getDCAReactiveBalance();
+    if (rcBalance < MIN_RC_BALANCE) {
+      res.status(503).json({
+        error: "Service temporarily unavailable",
+        reason: "DCA Reactive Contract is underfunded — automation callbacks won't fire.",
+      });
+      return;
+    }
+  } catch {
+    console.warn("[dca/activate] Could not verify DCA RC balance on Lasna");
+  }
+
+  try {
+    const { configId, txHash } = await createDCAConfig({
+      user: params.user as Address,
+      tokenIn: params.tokenIn as Address,
+      tokenOut: params.tokenOut as Address,
+      amountPerSwap: BigInt(params.amountPerSwap),
+      poolFee: params.poolFee,
+      totalSwaps: BigInt(params.totalSwaps),
+      swapInterval: BigInt(params.swapInterval),
+      minAmountOut: BigInt(params.minAmountOut),
+      duration: BigInt(params.duration),
+    });
+
+    // Fund DCA RC gas pool from payment
+    const price = computePrice("dca-strategy", params.duration);
+    await fundRCGasPool(price, params.duration);
+
+    const dcaCallbackAddress = process.env.DCA_STRATEGY_CALLBACK_ADDRESS;
+
+    res.json({
+      success: true,
+      configId: configId.toString(),
+      txHash,
+      user: params.user,
+      tokenIn: params.tokenIn,
+      tokenOut: params.tokenOut,
+      amountPerSwap: params.amountPerSwap,
+      poolFee: params.poolFee,
+      totalSwaps: params.totalSwaps,
+      swapInterval: params.swapInterval,
+      minAmountOut: params.minAmountOut,
+      message:
+        `DCA config #${configId} active. Swaps execute every ~${params.swapInterval}s ` +
+        `(or on each CRON tick if interval < 700s). ` +
+        `${params.totalSwaps > 0 ? `${params.totalSwaps} swaps total.` : "Runs until expiry or cancel."}`,
+      nextSteps: [
+        `Approve DCAStrategyCallback (${dcaCallbackAddress}) to spend your ${params.tokenIn} ` +
+          `(total needed: ${params.totalSwaps > 0 ? BigInt(params.amountPerSwap) * BigInt(params.totalSwaps) : "unlimited — approve a large amount"}).`,
+      ],
+    });
+  } catch (err: any) {
+    console.error("[dca/activate] Failed:", err);
+    res.status(500).json({
+      error: "On-chain DCA config creation failed",
+      reason: err?.shortMessage ?? err?.message ?? "Unknown error",
+    });
+  }
+});
+
+// ── DCA config management ────────────────────────────────────────────────────
+
+app.post("/api/dca/pause", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+
+  try {
+    const txHash = await pauseDCAConfig(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "paused" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to pause DCA config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+app.post("/api/dca/resume", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+
+  try {
+    const txHash = await resumeDCAConfig(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "resumed" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to resume DCA config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+app.post("/api/dca/cancel", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+
+  try {
+    const txHash = await cancelDCAConfig(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "cancelled" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to cancel DCA config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+// ── DCA status endpoints ─────────────────────────────────────────────────────
+
+app.get("/api/dca/config/:configId", async (req: Request, res: Response) => {
+  let id: bigint;
+  try {
+    id = BigInt(req.params.configId);
+  } catch {
+    res.status(400).json({ error: "Invalid config ID" });
+    return;
+  }
+
+  try {
+    const config = await getDCAConfig(id);
+    const statusLabels = ["Active", "Paused", "Cancelled", "Completed"];
+
+    res.json({
+      configId: config.id.toString(),
+      user: config.user,
+      tokenIn: config.tokenIn,
+      tokenOut: config.tokenOut,
+      amountPerSwap: config.amountPerSwap.toString(),
+      poolFee: config.poolFee,
+      totalSwaps: config.totalSwaps.toString(),
+      swapsExecuted: config.swapsExecuted.toString(),
+      totalAmountOut: config.totalAmountOut.toString(),
+      swapInterval: config.swapInterval.toString(),
+      minAmountOut: config.minAmountOut.toString(),
+      status: statusLabels[config.status] ?? "Unknown",
+      createdAt: Number(config.createdAt),
+      expiresAt: config.expiresAt > 0n ? Number(config.expiresAt) : null,
+      lastSwapAt: Number(config.lastSwapAt),
+      consecutiveFailures: config.consecutiveFailures,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch DCA config", reason: err.message });
+  }
+});
+
+app.get("/api/dca/configs", async (_req: Request, res: Response) => {
+  try {
+    const activeConfigIds = await getActiveDCAConfigs();
+    res.json({
+      activeConfigIds: activeConfigIds.map((id) => id.toString()),
+      count: activeConfigIds.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch active DCA configs", reason: err.message });
+  }
+});
+
+app.get("/api/dca/user/:userAddress", async (req: Request, res: Response) => {
+  const { userAddress } = req.params;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(userAddress)) {
+    res.status(400).json({ error: "Invalid address" });
+    return;
+  }
+
+  try {
+    const configIds = await getUserDCAConfigs(userAddress as Address);
+    res.json({
+      userAddress,
+      configIds: configIds.map((id) => id.toString()),
+      count: configIds.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch user DCA configs", reason: err.message });
+  }
+});
+
 // ── Health check ──────────────────────────────────────────────────────────────
 
 app.get("/health", async (_req: Request, res: Response) => {
@@ -484,10 +730,21 @@ app.get("/health", async (_req: Request, res: Response) => {
     const rcBalance = await getReactiveBalance().catch(() => -1n);
     const rcFunded = rcBalance >= MIN_RC_BALANCE;
 
+    const dcaRcBalance = await getDCAReactiveBalance().catch(() => -1n);
+    const dcaRcFunded = dcaRcBalance >= MIN_RC_BALANCE;
+
+    const allFunded = rcFunded && dcaRcFunded;
+
     res.json({
-      status: rcFunded ? "ok" : "degraded",
-      reactiveContractBalance: rcBalance >= 0n ? rcBalance.toString() : "unreachable",
-      reactiveContractFunded: rcBalance >= 0n ? rcFunded : "unknown",
+      status: allFunded ? "ok" : "degraded",
+      aaveProtection: {
+        reactiveContractBalance: rcBalance >= 0n ? rcBalance.toString() : "unreachable",
+        reactiveContractFunded: rcBalance >= 0n ? rcFunded : "unknown",
+      },
+      dcaStrategy: {
+        reactiveContractBalance: dcaRcBalance >= 0n ? dcaRcBalance.toString() : "unreachable",
+        reactiveContractFunded: dcaRcBalance >= 0n ? dcaRcFunded : "unknown",
+      },
     });
   } catch (err: any) {
     res.status(503).json({ status: "error", reason: err.message });
@@ -514,8 +771,10 @@ if (process.env.VERCEL !== "1") {
     console.log(`[server] Listening on :${PORT}`);
     console.log(`[server] Facilitator: ${FACILITATOR_URL}`);
     console.log(`[server] Recipient:   ${PAYMENT_RECIPIENT}`);
-    console.log(`[server] Callback:    ${process.env.AAVE_PROTECTION_CALLBACK_ADDRESS ?? "NOT SET"}`);
-    console.log(`[server] Reactive:    ${process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? "NOT SET"}`);
+    console.log(`[server] Aave CC:     ${process.env.AAVE_PROTECTION_CALLBACK_ADDRESS ?? "NOT SET"}`);
+    console.log(`[server] Aave RC:     ${process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? "NOT SET"}`);
+    console.log(`[server] DCA CC:      ${process.env.DCA_STRATEGY_CALLBACK_ADDRESS ?? "NOT SET"}`);
+    console.log(`[server] DCA RC:      ${process.env.DCA_STRATEGY_REACTIVE_ADDRESS ?? "NOT SET"}`);
   });
 }
 

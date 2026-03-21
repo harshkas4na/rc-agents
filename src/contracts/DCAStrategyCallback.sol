@@ -25,13 +25,11 @@ interface ISwapRouter {
 
 /**
  * @title DCAStrategyCallback
- * @notice Agent-facing DCA (Dollar Cost Averaging) strategy on Uniswap V3
- * @dev Any agent (wallet) can create and manage their own DCA configs.
- *      msg.sender = the agent's wallet = the config user.
+ * @notice Server-managed DCA (Dollar Cost Averaging) strategy on Uniswap V3
+ * @dev The server (owner) manages configs on behalf of users (the agent wallet).
  *      Each config specifies periodic swaps tokenIn → tokenOut via Uniswap V3.
  *      The RC triggers executeDCAOrders() on each CRON tick.
  *      Agents must approve this contract to spend their tokenIn.
- *      Owner retains admin-only rescue functions.
  */
 contract DCAStrategyCallback is AbstractCallback, RescuableBase {
     using SafeERC20 for IERC20;
@@ -118,16 +116,6 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
         _;
     }
 
-    /// @dev Allow the config's user (agent) or the contract owner (admin)
-    modifier configOwnerOrAdmin(uint256 configId) {
-        require(configId < dcaConfigs.length, "Config does not exist");
-        require(
-            msg.sender == dcaConfigs[configId].user || msg.sender == owner,
-            "Not config owner or admin"
-        );
-        _;
-    }
-
     constructor(
         address _owner,
         address _callbackSender,
@@ -139,9 +127,10 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
 
     /**
      * @notice Creates a new DCA configuration
-     * @dev Any agent can call this. msg.sender becomes the config user.
-     *      The agent must approve this contract to spend tokenIn BEFORE
+     * @dev Only the owner (server) can call this, creating configs on behalf of users.
+     *      The user (agent) must approve this contract to spend tokenIn BEFORE
      *      the first swap executes.
+     * @param _user Address whose tokens will be swapped (the agent wallet)
      * @param _tokenIn Token to sell on each swap
      * @param _tokenOut Token to buy on each swap
      * @param _amountPerSwap Amount of tokenIn per swap (in token decimals)
@@ -152,6 +141,7 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
      * @param _duration Seconds the config should remain active (0 = no expiry)
      */
     function createDCAConfig(
+        address _user,
         address _tokenIn,
         address _tokenOut,
         uint256 _amountPerSwap,
@@ -160,7 +150,8 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
         uint256 _swapInterval,
         uint256 _minAmountOut,
         uint256 _duration
-    ) external returns (uint256) {
+    ) external onlyOwner returns (uint256) {
+        require(_user != address(0), "Invalid user");
         require(_tokenIn != address(0), "Invalid tokenIn");
         require(_tokenOut != address(0), "Invalid tokenOut");
         require(_tokenIn != _tokenOut, "Tokens must differ");
@@ -176,7 +167,7 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
         dcaConfigs.push(
             DCAConfig({
                 id: configId,
-                user: msg.sender,
+                user: _user,
                 tokenIn: _tokenIn,
                 tokenOut: _tokenOut,
                 amountPerSwap: _amountPerSwap,
@@ -375,7 +366,7 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
 
     function cancelDCAConfig(
         uint256 configId
-    ) external configOwnerOrAdmin(configId) {
+    ) external onlyOwner validConfig(configId) {
         DCAConfig storage config = dcaConfigs[configId];
         require(
             config.status == DCAStatus.Active ||
@@ -389,7 +380,7 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
 
     function pauseDCAConfig(
         uint256 configId
-    ) external configOwnerOrAdmin(configId) {
+    ) external onlyOwner validConfig(configId) {
         DCAConfig storage config = dcaConfigs[configId];
         require(
             config.status == DCAStatus.Active,
@@ -402,7 +393,7 @@ contract DCAStrategyCallback is AbstractCallback, RescuableBase {
 
     function resumeDCAConfig(
         uint256 configId
-    ) external configOwnerOrAdmin(configId) {
+    ) external onlyOwner validConfig(configId) {
         DCAConfig storage config = dcaConfigs[configId];
         require(
             config.status == DCAStatus.Paused,

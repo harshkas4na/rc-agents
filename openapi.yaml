@@ -54,6 +54,8 @@ tags:
     description: Create and manage liquidation protection configs
   - name: Status
     description: Query on-chain state — no payment required
+  - name: DCA
+    description: DCA (Dollar Cost Averaging) strategy on Uniswap V3
   - name: Health
     description: Server health check
 
@@ -473,6 +475,268 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "500":
           description: On-chain permit transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/dca/activate:
+    post:
+      operationId: activateDCAStrategy
+      tags: [DCA]
+      summary: Activate DCA automation (x402-gated)
+      description: |
+        Pays for Reactive Network automation gas to power periodic Uniswap V3 swaps.
+        After payment, returns the DCA callback contract address and instructions for
+        the agent to call `createDCAConfig()` directly on-chain.
+
+        **This endpoint requires x402 payment in USDC on Base Sepolia (eip155:84532).**
+
+        ### Flow (identical to Aave Liquidation Protection)
+        1. Agent calls this endpoint with x402 payment (price based on `duration`)
+        2. Server creates the DCA config on-chain via the callback contract
+        3. Server funds the DCA Reactive Contract gas pool
+        4. Server returns `configId`, tx hash, and token approval instructions
+        5. Agent approves the CC to spend their `tokenIn`
+        6. Reactive Network starts executing swaps on each CRON tick (~12 min)
+      security:
+        - x402: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DCAActivateRequest"
+            examples:
+              usdcToWeth:
+                summary: DCA 10 USDC into WETH, 10 swaps, every 12 min
+                value:
+                  user: "0xYourWalletAddress"
+                  tokenIn: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+                  tokenOut: "0x4200000000000000000000000000000000000006"
+                  amountPerSwap: "10000000"
+                  poolFee: 3000
+                  totalSwaps: 10
+                  swapInterval: 720
+                  minAmountOut: "0"
+                  duration: 86400
+      responses:
+        "200":
+          description: DCA automation funded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DCAActivateResponse"
+        "400":
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "402":
+          description: Payment required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentRequiredResponse"
+        "503":
+          description: DCA Reactive Contract underfunded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/dca/pause:
+    post:
+      operationId: pauseDCAConfig
+      tags: [DCA]
+      summary: Pause a DCA config
+      description: |
+        Pauses an active DCA config. While paused, the Reactive Contract will skip
+        swap execution for this config. Server calls this as admin (contract owner).
+        No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/dca/resume:
+    post:
+      operationId: resumeDCAConfig
+      tags: [DCA]
+      summary: Resume a paused DCA config
+      description: |
+        Resumes a previously paused DCA config. Swap execution resumes on the next
+        CRON cycle (~12 minutes). No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/dca/cancel:
+    post:
+      operationId: cancelDCAConfig
+      tags: [DCA]
+      summary: Cancel a DCA config permanently
+      description: |
+        Permanently cancels a DCA config. Remaining swaps will not execute.
+        This action is irreversible. No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/dca/config/{configId}:
+    get:
+      operationId: getDCAConfig
+      tags: [DCA]
+      summary: Get DCA config details
+      description: |
+        Fetches the on-chain state of a DCA config including swap progress,
+        cumulative output, and all configuration parameters. No payment required.
+      parameters:
+        - name: configId
+          in: path
+          required: true
+          description: The numeric DCA config ID
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: DCA config details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DCAConfigResponse"
+        "400":
+          description: Invalid config ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/dca/configs:
+    get:
+      operationId: listActiveDCAConfigs
+      tags: [DCA]
+      summary: List all active DCA config IDs
+      description: |
+        Returns all currently active DCA config IDs. No payment required.
+      responses:
+        "200":
+          description: Active DCA config IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActiveConfigsResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/dca/user/{userAddress}:
+    get:
+      operationId: getUserDCAConfigs
+      tags: [DCA]
+      summary: Get all DCA configs for a user
+      description: |
+        Returns all DCA config IDs (any status) belonging to the given wallet address.
+        No payment required.
+      parameters:
+        - name: userAddress
+          in: path
+          required: true
+          description: EVM wallet address
+          schema:
+            type: string
+            pattern: "^0x[a-fA-F0-9]{40}$"
+      responses:
+        "200":
+          description: User's DCA config IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDCAConfigsResponse"
+        "400":
+          description: Invalid address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to fetch from chain
           content:
             application/json:
               schema:
@@ -1006,3 +1270,198 @@ components:
           example:
             protectedUser: ["Invalid address format"]
             protectionType: ["Expected number, received string"]
+
+    # ── DCA Strategy schemas ──────────────────────────────────────────────────
+
+    DCAActivateRequest:
+      type: object
+      required:
+        - user
+        - tokenIn
+        - tokenOut
+        - amountPerSwap
+        - poolFee
+      properties:
+        user:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: Wallet address whose tokens will be swapped (the agent)
+          example: "0xYourWalletAddress"
+        tokenIn:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: Token to sell on each swap
+          example: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+        tokenOut:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: Token to buy on each swap
+          example: "0x4200000000000000000000000000000000000006"
+        amountPerSwap:
+          type: string
+          pattern: "^\\d+$"
+          description: Amount of tokenIn per swap (in token base units, e.g., "10000000" = 10 USDC)
+          example: "10000000"
+        poolFee:
+          type: integer
+          enum: [500, 3000, 10000]
+          description: "Uniswap V3 pool fee tier: 500 (0.05%), 3000 (0.3%), 10000 (1%)"
+          example: 3000
+        totalSwaps:
+          type: integer
+          minimum: 0
+          description: Total swaps to execute (0 = unlimited, runs until expiry or cancel)
+          default: 0
+          example: 10
+        swapInterval:
+          type: integer
+          minimum: 60
+          description: Minimum seconds between swaps (min 60)
+          default: 720
+          example: 720
+        minAmountOut:
+          type: string
+          pattern: "^\\d+$"
+          description: Minimum tokenOut per swap for slippage protection (0 = no limit)
+          default: "0"
+          example: "0"
+        duration:
+          type: integer
+          minimum: 3600
+          maximum: 2592000
+          description: |
+            Duration in seconds. Determines the x402 payment amount and how long
+            the Reactive Network will run CRON callbacks.
+            Min: 3600 (1 hour), Max: 2592000 (30 days). Defaults to 86400 (1 day).
+          default: 86400
+          example: 86400
+
+    DCAActivateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        configId:
+          type: string
+          description: Numeric ID of the newly created on-chain DCA config
+          example: "0"
+        txHash:
+          type: string
+          description: Base Sepolia transaction hash for the config creation
+          example: "0xabc123..."
+        user:
+          type: string
+          example: "0xYourWalletAddress"
+        tokenIn:
+          type: string
+          example: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+        tokenOut:
+          type: string
+          example: "0x4200000000000000000000000000000000000006"
+        amountPerSwap:
+          type: string
+          example: "10000000"
+        poolFee:
+          type: integer
+          example: 3000
+        totalSwaps:
+          type: integer
+          example: 10
+        swapInterval:
+          type: integer
+          example: 720
+        minAmountOut:
+          type: string
+          example: "0"
+        message:
+          type: string
+          example: "DCA config #0 active. Swaps execute every ~720s."
+        nextSteps:
+          type: array
+          items:
+            type: string
+          description: Required follow-up actions (token approvals)
+
+    DCAConfigResponse:
+      type: object
+      properties:
+        configId:
+          type: string
+          example: "0"
+        user:
+          type: string
+          description: Wallet address that created the config (the agent)
+          example: "0xAgentWallet..."
+        tokenIn:
+          type: string
+          description: Token being sold on each swap
+          example: "0x036CbD53842c5426634e7929541eC2318f3dCF7e"
+        tokenOut:
+          type: string
+          description: Token being bought on each swap
+          example: "0x4200000000000000000000000000000000000006"
+        amountPerSwap:
+          type: string
+          description: Amount of tokenIn per swap (in token base units)
+          example: "10000000"
+        poolFee:
+          type: integer
+          description: "Uniswap V3 fee tier: 500, 3000, or 10000"
+          example: 3000
+        totalSwaps:
+          type: string
+          description: Total swaps to execute (0 = unlimited)
+          example: "10"
+        swapsExecuted:
+          type: string
+          description: Number of swaps completed so far
+          example: "3"
+        totalAmountOut:
+          type: string
+          description: Cumulative tokenOut received across all swaps (in token base units)
+          example: "12000000000000000"
+        swapInterval:
+          type: string
+          description: Minimum seconds between swaps
+          example: "720"
+        minAmountOut:
+          type: string
+          description: Minimum tokenOut per swap (slippage protection)
+          example: "0"
+        status:
+          type: string
+          enum: [Active, Paused, Cancelled, Completed]
+          example: Active
+        createdAt:
+          type: integer
+          description: Unix timestamp of config creation
+          example: 1710000000
+        expiresAt:
+          type: integer
+          nullable: true
+          description: Unix timestamp when the config auto-expires, or null if no expiry
+        lastSwapAt:
+          type: integer
+          description: Unix timestamp of last successful swap (0 if never)
+          example: 1710001400
+        consecutiveFailures:
+          type: integer
+          description: Number of consecutive failed swap attempts (auto-cancels at 5)
+          example: 0
+
+    UserDCAConfigsResponse:
+      type: object
+      properties:
+        userAddress:
+          type: string
+          example: "0xAgentWallet..."
+        configIds:
+          type: array
+          items:
+            type: string
+          description: All DCA config IDs belonging to this user (any status)
+          example: ["0", "3", "7"]
+        count:
+          type: integer
+          example: 3

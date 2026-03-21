@@ -18,6 +18,12 @@ export const CONTRACTS = {
 
   /** AaveProtectionReactive on Reactive Network */
   aaveProtectionReactive: (process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? "") as Address,
+
+  /** DCAStrategyCallback on Base Sepolia */
+  dcaStrategyCallback: (process.env.DCA_STRATEGY_CALLBACK_ADDRESS ?? "") as Address,
+
+  /** DCAStrategyReactive on Reactive Network */
+  dcaStrategyReactive: (process.env.DCA_STRATEGY_REACTIVE_ADDRESS ?? "") as Address,
 } as const;
 
 // ── Aave Protocol addresses on Base Sepolia ──────────────────────────────────

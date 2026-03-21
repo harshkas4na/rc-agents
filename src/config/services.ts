@@ -36,9 +36,22 @@ export const SERVICES: Record<string, ServiceDefinition> = {
     callbackAddressEnv: "AAVE_PROTECTION_CALLBACK_ADDRESS",
     reactiveAddressEnv: "AAVE_PROTECTION_REACTIVE_ADDRESS",
   },
-  // Future services get their own contract pairs and entries here:
-  // "stop-loss": { ... callbackAddressEnv: "STOP_LOSS_CALLBACK_ADDRESS", ... },
-  // "take-profit": { ... callbackAddressEnv: "TAKE_PROFIT_CALLBACK_ADDRESS", ... },
+  "dca-strategy": {
+    id: "dca-strategy",
+    name: "DCA Strategy (Uniswap V3)",
+    description:
+      "Automated Dollar Cost Averaging on Uniswap V3. Configure periodic token swaps " +
+      "(e.g., USDC → WETH every 12 minutes) that execute autonomously via the Reactive Network. " +
+      "Supports custom swap intervals, slippage protection, and fixed or unlimited swap counts. " +
+      "Agent creates configs directly on-chain — payment covers RC gas for automation.",
+    trigger: "CRON tick (~12 min) + swap interval elapsed",
+    action: "Swap tokenIn → tokenOut via Uniswap V3 on behalf of user",
+    pricePerDay: 200_000, // $0.20 / day
+    minDuration: 3_600,   // 1 hour
+    maxDuration: 2_592_000, // 30 days
+    callbackAddressEnv: "DCA_STRATEGY_CALLBACK_ADDRESS",
+    reactiveAddressEnv: "DCA_STRATEGY_REACTIVE_ADDRESS",
+  },
 };
 
 // ── Pricing ────────────────────────────────────────────────────────────────────
