@@ -40,10 +40,19 @@ const SWAP_ALLOCATION_BPS = 8000n; // 80% goes to ETH
 
 /** CRON_100 interval on Reactive Network ≈ 700 seconds */
 const CRON_INTERVAL_SECONDS = 700;
-/** Estimated gas per checkAndProtectPositions() callback call */
-const GAS_PER_CALLBACK = 500_000n;
+/**
+ * Estimated Lasna-side gas per cron tick.
+ * The RC's react() only emits a Callback event — the heavy work happens on Base Sepolia.
+ * ~100k covers event emission + internal RC state (persistConfigCreated, etc.) safely.
+ */
+const GAS_PER_CALLBACK = 100_000n;
 /** Safety buffer multiplier: 1.5× (multiply by 15, divide by 10) */
 const GAS_BUFFER_MULTIPLIER = 15n;
+/**
+ * Bridge exchange rate: 1 ETH (Base Sepolia) = 100 lREACT (Lasna).
+ * The Lasna gas cost formula produces lREACT wei; divide by this to get ETH wei needed.
+ */
+const BRIDGE_LREACT_PER_ETH = 100n;
 
 // ── ABI fragments ─────────────────────────────────────────────────────────────
 
@@ -115,10 +124,11 @@ export async function fundRCGasPool(usdcAmount: bigint, durationSeconds: number)
     console.log(`[bridge]   Swap tx: ${swapResult.txHash}`);
     console.log(`[bridge]   ETH received: ${formatEther(swapResult.ethReceived)}`);
 
-    // Keep the RC gas cost on Base; bridge the remainder to Lasna as REACT
-    const bridgeAmount = swapResult.ethReceived > breakdown.rcGasWei
-      ? swapResult.ethReceived - breakdown.rcGasWei
-      : 0n;
+    // Bridge exactly rcGasWei to Lasna; keep any remainder on Base as gas buffer.
+    // If the swap yielded less than rcGasWei, bridge everything we got.
+    const bridgeAmount = swapResult.ethReceived < breakdown.rcGasWei
+      ? swapResult.ethReceived
+      : breakdown.rcGasWei;
 
     if (bridgeAmount > 0n) {
       try {
@@ -174,20 +184,32 @@ export async function computeBreakdown(usdcAmount: bigint, durationSeconds: numb
   }
 
   const numCallbacks = BigInt(Math.ceil(durationSeconds / CRON_INTERVAL_SECONDS));
-  const ethForRC = (numCallbacks * GAS_PER_CALLBACK * gasPrice * GAS_BUFFER_MULTIPLIER) / 10n;
+  // lREACT needed (in lREACT wei, Lasna's native denomination)
+  const lreactNeededWei = (numCallbacks * GAS_PER_CALLBACK * gasPrice * GAS_BUFFER_MULTIPLIER) / 10n;
+  // Convert to ETH needed on Base Sepolia (bridge rate: 1 ETH → 100 lREACT)
+  const rcGasWei = lreactNeededWei / BRIDGE_LREACT_PER_ETH;
 
-  // Rough ETH estimate for logging (assumes ~$2500/ETH, adjust as needed)
-  const ethEstimateWei = (swapAmount * 10n ** 18n) / 2_500_000_000n;
-  // gasReserve = max(actual RC gas cost, 5% of swapped ETH as Base gas)
-  const baseGasFloorWei = (ethEstimateWei * 500n) / 10_000n; // 5%
-  const gasReserveWei = ethForRC > baseGasFloorWei ? ethForRC : baseGasFloorWei;
-  const bridgeWei = ethEstimateWei > gasReserveWei ? ethEstimateWei - gasReserveWei : 0n;
+  // Small flat reserve for Base Sepolia gas (createProtectionConfig + approvals)
+  const BASE_GAS_RESERVE = 1_000_000_000_000_000n; // 0.001 ETH
+
+  // bridge = the RC gas budget; baseReserve = flat buffer for Base-side ops
+  // These are estimates for logging — live path uses actual received WETH
+  const ethEstimateWei = (swapAmount * 10n ** 18n) / 2_500_000_000n; // rough @ $2500/ETH
+  const bridgeWei = rcGasWei;
+  const gasReserveWei = ethEstimateWei > bridgeWei + BASE_GAS_RESERVE
+    ? BASE_GAS_RESERVE
+    : ethEstimateWei > bridgeWei ? ethEstimateWei - bridgeWei : 0n;
+
+  console.log(`[bridge]   Lasna gas price: ${gasPrice} wei/gas`);
+  console.log(`[bridge]   Callbacks (${durationSeconds}s / 700s): ${numCallbacks}`);
+  console.log(`[bridge]   lREACT needed: ${formatEther(lreactNeededWei)} lREACT`);
+  console.log(`[bridge]   ETH to bridge (for RC gas): ${formatEther(rcGasWei)} ETH`);
 
   return {
     totalUsdc: usdcAmount,
     serverMargin,
     swapAmount,
-    rcGasWei: ethForRC,
+    rcGasWei,
     gasReserveEth: formatEther(gasReserveWei),
     bridgeAmountEth: formatEther(bridgeWei),
   };
@@ -198,7 +220,8 @@ export async function computeBreakdown(usdcAmount: bigint, durationSeconds: numb
 async function getClients() {
   const pk = process.env.SERVER_PRIVATE_KEY;
   if (!pk) throw new Error("SERVER_PRIVATE_KEY not set");
-  const account = privateKeyToAccount(pk as `0x${string}`);
+  const hex = pk.startsWith("0x") ? pk : `0x${pk}`;
+  const account = privateKeyToAccount(hex as `0x${string}`);
   const rpc = process.env.BASE_SEPOLIA_RPC_URL ?? "https://sepolia.base.org";
   return {
     account,
@@ -280,22 +303,46 @@ const WETH_WITHDRAW_ABI = parseAbi([
  * Bridge ETH from Base Sepolia to Lasna (Reactive Network).
  *
  * Steps:
- *   1. Unwrap WETH → ETH (WETH.withdraw())
- *   2. Send ETH to LASNA_BRIDGE_ADDRESS with the RC address as recipient
- *      so lREACT lands directly in the RC's gas pool on Lasna.
+ *   1. Unwrap WETH → ETH (WETH.withdraw(ethAmount))
+ *   2. Send ETH to LASNA_BRIDGE_ADDRESS.request(rcAddress) so lREACT lands
+ *      directly in the RC's gas pool on Lasna.
  *
- * Rate: 1 ETH → 100 lREACT.  Max 5 ETH per tx.
+ * Rate: 1 ETH → 100 lREACT.  Max 5 ETH per tx (amounts above 5 ETH are lost).
  */
 async function bridgeEthToLasna(
   ethAmount: bigint,
   rcAddress: Address
 ): Promise<`0x${string}`> {
-  // TODO: Implement in Phase 2.
-  // Stub preserved — set BRIDGE_MODE=live only after implementing.
-  throw new Error(
-    `bridgeEthToLasna not yet implemented (amount: ${formatEther(ethAmount)} ETH, rc: ${rcAddress}). ` +
-      "Bridge contract: " + LASNA_BRIDGE_ADDRESS + " on Base Sepolia. " +
-      "Call request(rcAddress) with the ETH value. " +
-      "See https://dev.reactive.network/docs/bridge"
-  );
+  if (ethAmount > 5n * 10n ** 18n) {
+    throw new Error(
+      `Bridge amount ${formatEther(ethAmount)} ETH exceeds the 5 ETH per-tx limit. Split into multiple calls.`
+    );
+  }
+
+  const { publicClient, walletClient } = await getClients();
+
+  // 1. Unwrap WETH → native ETH
+  console.log(`[bridge]   Unwrapping ${formatEther(ethAmount)} WETH → ETH...`);
+  const withdrawTx = await walletClient.writeContract({
+    address: WETH_ADDRESS,
+    abi: WETH_WITHDRAW_ABI,
+    functionName: "withdraw",
+    args: [ethAmount],
+  });
+  await publicClient.waitForTransactionReceipt({ hash: withdrawTx });
+  console.log(`[bridge]   Unwrap tx: ${withdrawTx}`);
+
+  // 2. Send ETH to Reactive Network bridge — lREACT goes to rcAddress on Lasna
+  console.log(`[bridge]   Bridging ${formatEther(ethAmount)} ETH → lREACT to RC at ${rcAddress}...`);
+  const bridgeTx = await walletClient.writeContract({
+    address: LASNA_BRIDGE_ADDRESS,
+    abi: BRIDGE_ABI,
+    functionName: "request",
+    args: [rcAddress],
+    value: ethAmount,
+  });
+  await publicClient.waitForTransactionReceipt({ hash: bridgeTx });
+  console.log(`[bridge]   Bridge tx: ${bridgeTx}`);
+
+  return bridgeTx;
 }
