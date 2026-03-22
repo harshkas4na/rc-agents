@@ -29,9 +29,9 @@ export const CONTRACTS = {
 // ── Aave Protocol addresses on Base Sepolia ──────────────────────────────────
 
 export const AAVE_ADDRESSES = {
-  LENDING_POOL: "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951" as Address,
-  PROTOCOL_DATA_PROVIDER: "0x2d8A3C5677189723C4cB8873CfC9C8976FDF38Ac" as Address,
-  ADDRESSES_PROVIDER: "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D" as Address,
+  LENDING_POOL: "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27" as Address,
+  PROTOCOL_DATA_PROVIDER: "0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b" as Address,
+  ADDRESSES_PROVIDER: "0xE4C23309117Aa30342BFaae6c95c6478e0A4Ad00" as Address,
 } as const;
 
 // ── Callback Proxy addresses (delivers RC callbacks to CCs on each chain) ─────
