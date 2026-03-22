@@ -57,9 +57,9 @@ forge create src/contracts/AaveProtectionCallback.sol:AaveProtectionCallback \
   --constructor-args \
     $SERVER_WALLET_ADDRESS \
     0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6 \
-    0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951 \
-    0x2d8A3C5677189723C4cB8873CfC9C8976FDF38Ac \
-    0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D
+    0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27 \
+    0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b \
+    0xE4C23309117Aa30342BFaae6c95c6478e0A4Ad00
 ```
 
 **Constructor args:**
@@ -67,9 +67,9 @@ forge create src/contracts/AaveProtectionCallback.sol:AaveProtectionCallback \
 |-----|-------|-------------|
 | `_owner` | `$SERVER_WALLET_ADDRESS` | Server wallet |
 | `_callbackSender` | `0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6` | Base Sepolia callback proxy |
-| `_lendingPool` | `0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951` | Aave Pool on Base Sepolia |
-| `_protocolDataProvider` | `0x2d8A3C5677189723C4cB8873CfC9C8976FDF38Ac` | Aave ProtocolDataProvider |
-| `_addressesProvider` | `0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D` | Aave PoolAddressesProvider |
+| `_lendingPool` | `0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27` | Aave Pool on Base Sepolia |
+| `_protocolDataProvider` | `0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b` | Aave ProtocolDataProvider |
+| `_addressesProvider` | `0xE4C23309117Aa30342BFaae6c95c6478e0A4Ad00` | Aave PoolAddressesProvider |
 
 Save the deployed address as `AAVE_PROTECTION_CALLBACK_ADDRESS`.
 
@@ -435,8 +435,8 @@ Configs with a duration automatically expire after `createdAt + duration`. The R
 | Uniswap V3 Router | `0x94cC0AaC535CCDB3C01d6787D6413C739ae12bc4` |
 | USDC (Base Sepolia) | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
 | WETH (Base Sepolia) | `0x4200000000000000000000000000000000000006` |
-| Aave Pool | `0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951` |
-| Aave DataProvider | `0x2d8A3C5677189723C4cB8873CfC9C8976FDF38Ac` |
-| Aave AddressesProvider | `0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D` |
+| Aave Pool | `0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27` |
+| Aave DataProvider | `0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b` |
+| Aave AddressesProvider | `0xE4C23309117Aa30342BFaae6c95c6478e0A4Ad00` |
 | Lasna Bridge (from Base Sep) | `0x2afaFD298b23b62760711756088F75B7409f5967` |
 | CRON_100 Topic | `0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70` |

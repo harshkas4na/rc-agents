@@ -226,8 +226,8 @@ async function main() {
         protectionType: 0, // COLLATERAL_DEPOSIT
         healthFactorThreshold: "1500000000000000000", // 1.5 HF
         targetHealthFactor: "2000000000000000000",    // 2.0 HF
-        collateralAsset: WETH,
-        debtAsset: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f", // USDC debt token
+        collateralAsset: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f", // USDC on Aave Base Sepolia
+        debtAsset: WETH,
         preferDebtRepayment: false,
         duration: SUBSCRIPTION_SECONDS,
       }),

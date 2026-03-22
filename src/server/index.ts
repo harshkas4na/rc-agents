@@ -141,8 +141,8 @@ const protectionSchema = z.object({
   protectionType: z.number().int().min(0).max(2),
   healthFactorThreshold: z.string().regex(/^\d+$/),
   targetHealthFactor: z.string().regex(/^\d+$/),
-  collateralAsset: z.string().regex(addressRegex).default(WETH_BASE_SEPOLIA),
-  debtAsset: z.string().regex(addressRegex).default("0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"),
+  collateralAsset: z.string().regex(addressRegex).default("0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f"),
+  debtAsset: z.string().regex(addressRegex).default(WETH_BASE_SEPOLIA),
   preferDebtRepayment: z.boolean().default(false),
   duration: z.number().int().min(3600).max(2592000).default(86400),
 });
