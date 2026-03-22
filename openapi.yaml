@@ -1,13 +1,18 @@
 openapi: 3.1.0
 info:
-  title: Aave Liquidation Protection API
+  title: RC-Agents — DeFi Automation Marketplace API
   version: 1.0.0
   description: |
-    Autonomous Aave liquidation protection service powered by the Reactive Network.
+    An automation marketplace where AI agents pay micropayments via x402 to purchase autonomous
+    DeFi protection services powered by Reactive Smart Contracts.
 
-    Agents can use this API to protect DeFi positions from liquidation on Aave (Base Sepolia).
-    The service monitors health factors every ~12 minutes and automatically supplies collateral
-    or repays debt when the health factor drops below a configured threshold.
+    ## Available Services
+
+    1. **Aave Liquidation Protection** ($0.30/day) — Monitors health factors every ~12 minutes
+       and automatically supplies collateral or repays debt when the health factor drops below
+       a configured threshold.
+    2. **DCA Strategy** ($0.24/day) — Executes periodic Uniswap V3 swaps (e.g., USDC → WETH)
+       on configurable intervals with slippage protection.
 
     ## How it works
     1. Call `GET /api/services` to see available services and pricing.
