@@ -47,7 +47,7 @@ import {
   WGBTC_GOAT_TESTNET3,
   CHAIN,
 } from "../config/services";
-import { GOAT_TESTNET3_CONTRACTS } from "../config/contracts";
+import { GOAT_TESTNET3_CONTRACTS, GOAT_NETWORK } from "../config/contracts";
 import {
   createProtectionConfig,
   pauseProtectionConfig,
@@ -69,7 +69,7 @@ import {
   getDCAReactiveBalance,
 } from "./chain";
 import { fundRCGasPool } from "./bridge";
-import { renderLandingPage } from "./landing";
+import { renderLandingPage, DASHBOARD_SCRIPT } from "./landing";
 import {
   createDCAConfigGoat,
   pauseDCAConfigGoat,
@@ -78,6 +78,7 @@ import {
   getDCAConfigGoat,
   getActiveDCAConfigsGoat,
   getUserDCAConfigsGoat,
+  getAllDCAConfigsGoat,
   getGoatDeployerBalance,
   executeDCAOrdersGoat,
   MIN_GOAT_BALANCE,
@@ -226,6 +227,14 @@ app.get("/", (req: Request, res: Response) => {
   const baseUrl = `${req.protocol}://${req.get("host")}`;
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(renderLandingPage(baseUrl));
+});
+
+// Served as its own file rather than inlined: helmet's default CSP is
+// `script-src 'self'`, which blocks inline <script>. See landing.ts.
+app.get("/dashboard.js", (_req: Request, res: Response) => {
+  res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+  res.setHeader("Cache-Control", "public, max-age=300");
+  res.send(DASHBOARD_SCRIPT);
 });
 
 // ── Free endpoints ────────────────────────────────────────────────────────────
@@ -941,6 +950,120 @@ app.get("/api/goat/dca/user/:userAddress", async (req: Request, res: Response) =
   }
 });
 
+// ── Dashboard data ────────────────────────────────────────────────────────────
+// Everything the read-only monitoring page at "/" renders, in one call. The page
+// fetches this client-side rather than being server-rendered, so a slow or dead
+// RPC degrades one panel instead of blocking the whole page on a cold start.
+//
+// Read-only by construction: every value here comes from an on-chain read or the
+// static service catalog. There is no action on this surface a visitor can take.
+
+app.get("/api/dashboard", async (_req: Request, res: Response) => {
+  const settled = await Promise.allSettled([
+    getReactiveBalance(),
+    getActiveConfigs(),
+    getDCAReactiveBalance(),
+    getActiveDCAConfigs(),
+    getGoatDeployerBalance(),
+    getActiveDCAConfigsGoat(),
+    getAllDCAConfigsGoat(),
+  ]);
+
+  const val = <T>(i: number): T | null =>
+    settled[i].status === "fulfilled" ? ((settled[i] as PromiseFulfilledResult<T>).value) : null;
+
+  const aaveRcBalance = val<bigint>(0);
+  const aaveConfigs = val<bigint[]>(1);
+  const dcaRcBalance = val<bigint>(2);
+  const dcaConfigs = val<bigint[]>(3);
+  const goatBalance = val<bigint>(4);
+  const goatActiveIds = val<bigint[]>(5);
+  const goatAllIds = val<bigint[]>(6);
+
+  // Pull detail for the GOAT configs — this is the chain where execution actually
+  // happens, so it's the one worth showing swap-by-swap rather than as a count.
+  // Deliberately every config, not just the active ones: a completed config that
+  // executed its swaps is the strongest evidence the pipeline works, and it would
+  // be invisible in an active-only view.
+  let goatConfigs: any[] = [];
+  let lifetimeSwaps = 0n;
+  let lifetimeAmountOut = 0n;
+  const idsToShow = goatAllIds ?? goatActiveIds;
+  if (idsToShow && idsToShow.length > 0) {
+    const newestFirst = [...idsToShow].sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+    const details = await Promise.allSettled(
+      newestFirst.slice(0, 25).map((id) => getDCAConfigGoat(id))
+    );
+    const statusLabels = ["Active", "Paused", "Cancelled", "Completed"];
+    goatConfigs = details
+      .filter((d): d is PromiseFulfilledResult<any> => d.status === "fulfilled")
+      .map((d) => {
+        lifetimeSwaps += d.value.swapsExecuted;
+        lifetimeAmountOut += d.value.totalAmountOut;
+        return {
+          configId: d.value.id.toString(),
+          user: d.value.user,
+          amountPerSwap: d.value.amountPerSwap.toString(),
+          swapsExecuted: d.value.swapsExecuted.toString(),
+          totalSwaps: d.value.totalSwaps.toString(),
+          totalAmountOut: d.value.totalAmountOut.toString(),
+          status: statusLabels[d.value.status] ?? "Unknown",
+          lastSwapAt: Number(d.value.lastSwapAt),
+        };
+      });
+  }
+
+  res.json({
+    generatedAt: Math.floor(Date.now() / 1000),
+    services: Object.values(SERVICES).map((svc) => ({
+      id: svc.id,
+      name: svc.name,
+      trigger: svc.trigger,
+      pricePerDay: formatUsdc(BigInt(svc.pricePerDay)),
+    })),
+    payment: {
+      network: NETWORK,
+      asset: USDC_BASE_SEPOLIA,
+      recipient: PAYMENT_RECIPIENT,
+      facilitator: FACILITATOR_URL,
+    },
+    aaveProtection: {
+      chain: CHAIN.BASE_SEPOLIA.caip2,
+      automation: "Reactive Network (Lasna) — CRON_100, ~12 min",
+      reactiveContractBalance: aaveRcBalance !== null ? aaveRcBalance.toString() : null,
+      reactiveContractFunded: aaveRcBalance !== null ? aaveRcBalance >= MIN_RC_BALANCE : null,
+      callbackContract: process.env.AAVE_PROTECTION_CALLBACK_ADDRESS ?? null,
+      reactiveContract: process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? null,
+      activeConfigCount: aaveConfigs !== null ? aaveConfigs.length : null,
+    },
+    dcaStrategy: {
+      chain: CHAIN.BASE_SEPOLIA.caip2,
+      automation: "Reactive Network (Lasna)",
+      reactiveContractBalance: dcaRcBalance !== null ? dcaRcBalance.toString() : null,
+      reactiveContractFunded: dcaRcBalance !== null ? dcaRcBalance >= MIN_RC_BALANCE : null,
+      callbackContract: process.env.DCA_STRATEGY_CALLBACK_ADDRESS ?? null,
+      reactiveContract: process.env.DCA_STRATEGY_REACTIVE_ADDRESS ?? null,
+      activeConfigCount: dcaConfigs !== null ? dcaConfigs.length : null,
+      configured: dcaRcBalance !== null,
+    },
+    dcaStrategyGoat: {
+      chain: CHAIN.GOAT_TESTNET3.caip2,
+      automation:
+        "Permissionless executeDCAOrders() — no privileged caller, no Reactive Network",
+      explorer: GOAT_NETWORK.testnet3.explorer,
+      executorBalance: goatBalance !== null ? goatBalance.toString() : null,
+      executorFunded: goatBalance !== null ? goatBalance >= MIN_GOAT_BALANCE : null,
+      contracts: GOAT_TESTNET3_CONTRACTS,
+      tokens: { tokenIn: DEMO_USDC_GOAT_TESTNET3, tokenOut: WGBTC_GOAT_TESTNET3 },
+      activeConfigCount: goatActiveIds !== null ? goatActiveIds.length : null,
+      totalConfigCount: goatAllIds !== null ? goatAllIds.length : null,
+      lifetimeSwapsExecuted: lifetimeSwaps.toString(),
+      lifetimeAmountOut: lifetimeAmountOut.toString(),
+      configs: goatConfigs,
+    },
+  });
+});
+
 // ── Health check ──────────────────────────────────────────────────────────────
 
 app.get("/health", async (_req: Request, res: Response) => {
@@ -1008,6 +1131,28 @@ app.get("/openapi.yaml", (_req: Request, res: Response) => {
   res.send(fs.readFileSync(specPath, "utf-8"));
 });
 
+// ── Agent skill card ──────────────────────────────────────────────────────────
+// SKILLS.md is the prose counterpart to openapi.yaml: the spec says what the
+// endpoints are, the skill card says when an agent should reach for them and
+// how the x402 payment loop actually behaves. Served as text/markdown so an
+// agent fetching it gets something it can read directly into context.
+//
+// Exposed at both /skills.md and /.well-known/skills.md — the latter is where
+// several agent frameworks probe by convention.
+
+function sendSkillCard(_req: Request, res: Response) {
+  const skillPath = path.resolve(__dirname, "../../SKILLS.md");
+  if (!fs.existsSync(skillPath)) {
+    res.status(404).json({ error: "Skill card not found" });
+    return;
+  }
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.send(fs.readFileSync(skillPath, "utf-8"));
+}
+
+app.get("/skills.md", sendSkillCard);
+app.get("/.well-known/skills.md", sendSkillCard);
+
 // ── GOAT scheduler tick (single-shot, for Vercel Cron) ────────────────────────
 // setInterval (goat-scheduler.ts) only works on a persistent process — it does
 // nothing useful on Vercel's serverless functions, which don't stay alive
@@ -1016,14 +1161,20 @@ app.get("/openapi.yaml", (_req: Request, res: Response) => {
 // or any external scheduler, to get the same periodic polling in production.
 // Still just as permissionless underneath — this endpoint is a convenience
 // for triggering the call, not a privileged path; see chain-goat.ts.
-app.post("/api/goat/dca/tick", async (_req: Request, res: Response) => {
+//
+// Registered on GET as well as POST on purpose: Vercel Cron invokes its target
+// with a GET, so a POST-only route would simply 404 on every scheduled run.
+async function goatDcaTick(_req: Request, res: Response) {
   try {
     const { txHash, swapsExecuted } = await executeDCAOrdersGoat();
     res.json({ success: true, txHash, swapsExecuted: swapsExecuted.toString() });
   } catch (err: any) {
     res.status(500).json({ error: "GOAT DCA tick failed", reason: err?.shortMessage ?? err?.message });
   }
-});
+}
+
+app.get("/api/goat/dca/tick", goatDcaTick);
+app.post("/api/goat/dca/tick", goatDcaTick);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 

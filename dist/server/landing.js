@@ -1,3 +1,4 @@
+"use strict";
 /**
  * landing.ts — the human-facing "/" page.
  *
@@ -24,9 +25,11 @@
  * "Loading on-chain state…". Serving it as its own same-origin file satisfies
  * the policy without weakening it.
  */
-
-export function renderLandingPage(baseUrl: string): string {
-  return `<!doctype html>
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DASHBOARD_SCRIPT = void 0;
+exports.renderLandingPage = renderLandingPage;
+function renderLandingPage(baseUrl) {
+    return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -178,9 +181,8 @@ export function renderLandingPage(baseUrl: string): string {
 </body>
 </html>`;
 }
-
 /** Client script for the monitoring panels. Served at /dashboard.js — see the note above. */
-export const DASHBOARD_SCRIPT = `(function () {
+exports.DASHBOARD_SCRIPT = `(function () {
   var GOAT_EXPLORER = "https://explorer.testnet3.goat.network";
   var BASE_EXPLORER = "https://sepolia.basescan.org";
 
@@ -334,3 +336,4 @@ export const DASHBOARD_SCRIPT = `(function () {
     });
 })();
 `;
+//# sourceMappingURL=landing.js.map

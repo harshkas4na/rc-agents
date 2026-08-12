@@ -265,6 +265,21 @@ export async function getActiveDCAConfigsGoat(): Promise<bigint[]> {
   return (result as any[]).map((id: any) => BigInt(id));
 }
 
+/**
+ * Every config ever created, active or not. getActiveDCAConfigsGoat() is the
+ * right read for "what still needs executing"; this is the right read for the
+ * monitoring page, where a completed config that actually swapped is the most
+ * useful thing a visitor can see.
+ */
+export async function getAllDCAConfigsGoat(): Promise<bigint[]> {
+  const result = await goatPublicClient.readContract({
+    address: getDCACallbackAddress(),
+    abi: DCA_STRATEGY_CALLBACK_GOAT_ABI,
+    functionName: "getAllConfigs",
+  });
+  return (result as any[]).map((id: any) => BigInt(id));
+}
+
 export async function getUserDCAConfigsGoat(userAddress: Address): Promise<bigint[]> {
   const result = await goatPublicClient.readContract({
     address: getDCACallbackAddress(),

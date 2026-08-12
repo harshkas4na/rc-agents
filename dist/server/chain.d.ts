@@ -1998,6 +1998,7 @@ export declare const publicClient: {
         withdrawalsRoot?: `0x${string}` | undefined | undefined;
         transactions: includeTransactions extends true ? ({
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "deposit";
             yParity: number;
             from: import("abitype").Address;
@@ -2005,7 +2006,6 @@ export declare const publicClient: {
             hash: import("viem").Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: import("abitype").Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -2022,6 +2022,7 @@ export declare const publicClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_2 ? T_2 extends (blockTag extends "pending" ? true : false) ? T_2 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "legacy";
             yParity?: undefined | undefined | undefined;
             from: import("abitype").Address;
@@ -2029,7 +2030,6 @@ export declare const publicClient: {
             hash: import("viem").Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: import("abitype").Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -2050,6 +2050,7 @@ export declare const publicClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_5 ? T_5 extends (blockTag extends "pending" ? true : false) ? T_5 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip2930";
             yParity: number;
             from: import("abitype").Address;
@@ -2057,7 +2058,6 @@ export declare const publicClient: {
             hash: import("viem").Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: import("abitype").Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -2078,6 +2078,7 @@ export declare const publicClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_8 ? T_8 extends (blockTag extends "pending" ? true : false) ? T_8 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip1559";
             yParity: number;
             from: import("abitype").Address;
@@ -2085,7 +2086,6 @@ export declare const publicClient: {
             hash: import("viem").Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: import("abitype").Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -2106,6 +2106,7 @@ export declare const publicClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_11 ? T_11 extends (blockTag extends "pending" ? true : false) ? T_11 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip4844";
             yParity: number;
             from: import("abitype").Address;
@@ -2113,7 +2114,6 @@ export declare const publicClient: {
             hash: import("viem").Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: import("abitype").Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -2134,6 +2134,7 @@ export declare const publicClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_14 ? T_14 extends (blockTag extends "pending" ? true : false) ? T_14 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip7702";
             yParity: number;
             from: import("abitype").Address;
@@ -2141,7 +2142,6 @@ export declare const publicClient: {
             hash: import("viem").Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: import("abitype").Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -2506,6 +2506,7 @@ export declare const publicClient: {
     getStorageAt: (args: import("viem").GetStorageAtParameters) => Promise<import("viem").GetStorageAtReturnType>;
     getTransaction: <blockTag extends import("viem").BlockTag = "latest">(args: import("viem").GetTransactionParameters<blockTag>) => Promise<{
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "deposit";
         yParity: number;
         from: import("abitype").Address;
@@ -2513,7 +2514,6 @@ export declare const publicClient: {
         hash: import("viem").Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: import("abitype").Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -2530,6 +2530,7 @@ export declare const publicClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_2 ? T_2 extends (blockTag extends "pending" ? true : false) ? T_2 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "legacy";
         yParity?: undefined | undefined | undefined;
         from: import("abitype").Address;
@@ -2537,7 +2538,6 @@ export declare const publicClient: {
         hash: import("viem").Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: import("abitype").Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -2558,6 +2558,7 @@ export declare const publicClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_5 ? T_5 extends (blockTag extends "pending" ? true : false) ? T_5 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip2930";
         yParity: number;
         from: import("abitype").Address;
@@ -2565,7 +2566,6 @@ export declare const publicClient: {
         hash: import("viem").Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: import("abitype").Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -2586,6 +2586,7 @@ export declare const publicClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_8 ? T_8 extends (blockTag extends "pending" ? true : false) ? T_8 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip1559";
         yParity: number;
         from: import("abitype").Address;
@@ -2593,7 +2594,6 @@ export declare const publicClient: {
         hash: import("viem").Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: import("abitype").Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -2614,6 +2614,7 @@ export declare const publicClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_11 ? T_11 extends (blockTag extends "pending" ? true : false) ? T_11 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip4844";
         yParity: number;
         from: import("abitype").Address;
@@ -2621,7 +2622,6 @@ export declare const publicClient: {
         hash: import("viem").Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: import("abitype").Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -2642,6 +2642,7 @@ export declare const publicClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_14 ? T_14 extends (blockTag extends "pending" ? true : false) ? T_14 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip7702";
         yParity: number;
         from: import("abitype").Address;
@@ -2649,7 +2650,6 @@ export declare const publicClient: {
         hash: import("viem").Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: import("abitype").Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -11272,6 +11272,7 @@ export declare const lasnaClient: {
         withdrawalsRoot?: `0x${string}` | undefined;
         transactions: includeTransactions extends true ? ({
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "legacy";
             yParity?: undefined | undefined;
             from: Address;
@@ -11279,7 +11280,6 @@ export declare const lasnaClient: {
             hash: Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -11297,6 +11297,7 @@ export declare const lasnaClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_2 ? T_2 extends (blockTag extends "pending" ? true : false) ? T_2 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip2930";
             yParity: number;
             from: Address;
@@ -11304,7 +11305,6 @@ export declare const lasnaClient: {
             hash: Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -11322,6 +11322,7 @@ export declare const lasnaClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_5 ? T_5 extends (blockTag extends "pending" ? true : false) ? T_5 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip1559";
             yParity: number;
             from: Address;
@@ -11329,7 +11330,6 @@ export declare const lasnaClient: {
             hash: Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -11347,6 +11347,7 @@ export declare const lasnaClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_8 ? T_8 extends (blockTag extends "pending" ? true : false) ? T_8 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip4844";
             yParity: number;
             from: Address;
@@ -11354,7 +11355,6 @@ export declare const lasnaClient: {
             hash: Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -11372,6 +11372,7 @@ export declare const lasnaClient: {
             transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_11 ? T_11 extends (blockTag extends "pending" ? true : false) ? T_11 extends true ? null : number : never : never;
         } | {
             r: import("viem").Hex;
+            s: import("viem").Hex;
             type: "eip7702";
             yParity: number;
             from: Address;
@@ -11379,7 +11380,6 @@ export declare const lasnaClient: {
             hash: Hash;
             input: import("viem").Hex;
             nonce: number;
-            s: import("viem").Hex;
             to: Address | null;
             typeHex: import("viem").Hex | null;
             v: bigint;
@@ -11436,6 +11436,7 @@ export declare const lasnaClient: {
     getStorageAt: (args: import("viem").GetStorageAtParameters) => Promise<import("viem").GetStorageAtReturnType>;
     getTransaction: <blockTag extends import("viem").BlockTag = "latest">(args: import("viem").GetTransactionParameters<blockTag>) => Promise<{
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "legacy";
         yParity?: undefined | undefined;
         from: Address;
@@ -11443,7 +11444,6 @@ export declare const lasnaClient: {
         hash: Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -11461,6 +11461,7 @@ export declare const lasnaClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_2 ? T_2 extends (blockTag extends "pending" ? true : false) ? T_2 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip2930";
         yParity: number;
         from: Address;
@@ -11468,7 +11469,6 @@ export declare const lasnaClient: {
         hash: Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -11486,6 +11486,7 @@ export declare const lasnaClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_5 ? T_5 extends (blockTag extends "pending" ? true : false) ? T_5 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip1559";
         yParity: number;
         from: Address;
@@ -11493,7 +11494,6 @@ export declare const lasnaClient: {
         hash: Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -11511,6 +11511,7 @@ export declare const lasnaClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_8 ? T_8 extends (blockTag extends "pending" ? true : false) ? T_8 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip4844";
         yParity: number;
         from: Address;
@@ -11518,7 +11519,6 @@ export declare const lasnaClient: {
         hash: Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -11536,6 +11536,7 @@ export declare const lasnaClient: {
         transactionIndex: (blockTag extends "pending" ? true : false) extends infer T_11 ? T_11 extends (blockTag extends "pending" ? true : false) ? T_11 extends true ? null : number : never : never;
     } | {
         r: import("viem").Hex;
+        s: import("viem").Hex;
         type: "eip7702";
         yParity: number;
         from: Address;
@@ -11543,7 +11544,6 @@ export declare const lasnaClient: {
         hash: Hash;
         input: import("viem").Hex;
         nonce: number;
-        s: import("viem").Hex;
         to: Address | null;
         typeHex: import("viem").Hex | null;
         v: bigint;
@@ -37297,4 +37297,56 @@ export declare function getHealthFactor(userAddress: Address): Promise<bigint>;
 export declare function getReactiveBalance(): Promise<bigint>;
 /** Minimum REACT balance (0.01 REACT) below which we refuse new registrations. */
 export declare const MIN_RC_BALANCE = 10000000000000000n;
+export interface CreateDCAParams {
+    user: Address;
+    tokenIn: Address;
+    tokenOut: Address;
+    amountPerSwap: bigint;
+    poolFee: number;
+    totalSwaps: bigint;
+    swapInterval: bigint;
+    minAmountOut: bigint;
+    duration: bigint;
+}
+/**
+ * Create a DCA config on DCAStrategyCallback.
+ *
+ * Called by the server after x402 payment is confirmed.
+ * The CC's createDCAConfig() is owner-only — the server wallet must be the CC owner.
+ *
+ * Returns the config ID parsed from the DCAConfigCreated event.
+ */
+export declare function createDCAConfig(params: CreateDCAParams): Promise<{
+    configId: bigint;
+    txHash: Hash;
+}>;
+export interface DCAConfigData {
+    id: bigint;
+    user: string;
+    tokenIn: string;
+    tokenOut: string;
+    amountPerSwap: bigint;
+    poolFee: number;
+    totalSwaps: bigint;
+    swapsExecuted: bigint;
+    totalAmountOut: bigint;
+    swapInterval: bigint;
+    minAmountOut: bigint;
+    status: number;
+    createdAt: bigint;
+    expiresAt: bigint;
+    lastSwapAt: bigint;
+    consecutiveFailures: number;
+    lastAttemptAt: bigint;
+}
+export declare function getDCAConfig(configId: bigint): Promise<DCAConfigData>;
+export declare function getActiveDCAConfigs(): Promise<bigint[]>;
+export declare function getUserDCAConfigs(userAddress: Address): Promise<bigint[]>;
+export declare function pauseDCAConfig(configId: bigint): Promise<Hash>;
+export declare function resumeDCAConfig(configId: bigint): Promise<Hash>;
+export declare function cancelDCAConfig(configId: bigint): Promise<Hash>;
+/**
+ * Check the REACT balance of the DCA Reactive Contract on Lasna.
+ */
+export declare function getDCAReactiveBalance(): Promise<bigint>;
 //# sourceMappingURL=chain.d.ts.map

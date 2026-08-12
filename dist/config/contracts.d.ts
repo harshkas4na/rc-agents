@@ -13,6 +13,10 @@ export declare const CONTRACTS: {
     readonly aaveProtectionCallback: Address;
     /** AaveProtectionReactive on Reactive Network */
     readonly aaveProtectionReactive: Address;
+    /** DCAStrategyCallback on Base Sepolia */
+    readonly dcaStrategyCallback: Address;
+    /** DCAStrategyReactive on Reactive Network */
+    readonly dcaStrategyReactive: Address;
 };
 export declare const AAVE_ADDRESSES: {
     readonly LENDING_POOL: Address;
@@ -46,9 +50,44 @@ export declare const CHAIN_IDS: {
     readonly LASNA: 5318007;
     readonly SEPOLIA: 11155111;
     readonly BASE_SEPOLIA: 84532;
+    readonly GOAT_TESTNET3: 48816;
     readonly REACTIVE: 1597;
     readonly ETHEREUM: 1;
     readonly BASE: 8453;
+    readonly GOAT_MAINNET: 2345;
+};
+export declare const GOAT_NETWORK: {
+    readonly testnet3: {
+        readonly chainId: 48816;
+        readonly rpcUrl: "https://rpc.testnet3.goat.network";
+        readonly rpcBackup: "https://rpc.ankr.com/goat_testnet";
+        readonly explorer: "https://explorer.testnet3.goat.network";
+        readonly bridge: "https://bridge.testnet3.goat.network";
+        readonly faucet: "https://bridge.testnet3.goat.network/faucet";
+        readonly nativeCurrency: "BTC";
+    };
+    readonly mainnet: {
+        readonly chainId: 2345;
+        readonly rpcUrl: "https://rpc.goat.network";
+        readonly rpcBackup: "https://rpc.ankr.com/goat_mainnet";
+        readonly archiveRpcUrl: "https://archive.goat.network";
+        readonly explorer: "https://explorer.goat.network";
+        readonly bridge: "https://bridge.goat.network";
+        readonly nativeCurrency: "BTC";
+    };
+};
+/** GOAT Testnet3's canonical wrapped-native predeploy — same address as mainnet, confirmed live. */
+export declare const WGBTC_TESTNET3: Address;
+export declare const GOAT_TESTNET3_CONTRACTS: {
+    readonly uniswapV3Factory: Address;
+    readonly demoUsdcWgbtcPool: Address;
+    readonly demoUsdc: Address;
+    readonly miniSwapRouter: Address;
+    readonly liquidityHelper: Address;
+    readonly dcaStrategyCallbackGoat: Address;
+};
+export declare const GOAT_PROTOCOL_ADDRESSES: {
+    readonly bimaMarket: Address;
 };
 export declare const FAUCETS: {
     readonly sepolia: Address;

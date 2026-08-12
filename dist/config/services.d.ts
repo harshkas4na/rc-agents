@@ -37,8 +37,16 @@ export declare const CHAIN: {
         readonly id: 5318007;
         readonly caip2: "eip155:5318007";
     };
+    readonly GOAT_TESTNET3: {
+        readonly id: 48816;
+        readonly caip2: "eip155:48816";
+    };
 };
 export declare const USDC_BASE_SEPOLIA: "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 export declare const WETH_BASE_SEPOLIA: "0x4200000000000000000000000000000000000006";
-export declare const AAVE_POOL_BASE_SEPOLIA: "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951";
+export declare const AAVE_POOL_BASE_SEPOLIA: "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27";
+/** GOAT Testnet3's canonical wrapped-native predeploy (WGBTC). Same address as mainnet. */
+export declare const WGBTC_GOAT_TESTNET3: "0xbC10000000000000000000000000000000000000";
+/** Testnet-only demo USDC stand-in — see src/contracts/goat/DemoUSDC.sol. */
+export declare const DEMO_USDC_GOAT_TESTNET3: "0xF35b99BaE312FD59145F5eBE4482fD433d1C7E20";
 //# sourceMappingURL=services.d.ts.map

@@ -1,0 +1,225 @@
+"use strict";
+/**
+ * chain-goat.ts — viem clients and contract interactions for GOAT Testnet3.
+ *
+ * Parallel to chain.ts (Base Sepolia + Reactive Network), not a replacement —
+ * the two products run on different chains with different automation models.
+ * See /goat-research for the full reasoning.
+ *
+ * Flow (no Reactive Network involved):
+ *   1. Agent pays via x402 → server receives USDC (still on Base Sepolia —
+ *      x402 payment rail is unchanged; only DCA execution moves to GOAT)
+ *   2. Server calls createDCAConfig() on DCAStrategyCallbackGoat (owner-only)
+ *   3. The server's own scheduler (goat-scheduler.ts) calls the PERMISSIONLESS
+ *      executeDCAOrders() periodically — same call anyone else could make.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.MIN_GOAT_BALANCE = exports.goatPublicClient = exports.goatTestnet3 = void 0;
+exports.getGoatWalletClient = getGoatWalletClient;
+exports.createDCAConfigGoat = createDCAConfigGoat;
+exports.pauseDCAConfigGoat = pauseDCAConfigGoat;
+exports.resumeDCAConfigGoat = resumeDCAConfigGoat;
+exports.cancelDCAConfigGoat = cancelDCAConfigGoat;
+exports.executeDCAOrdersGoat = executeDCAOrdersGoat;
+exports.getDCAConfigGoat = getDCAConfigGoat;
+exports.getActiveDCAConfigsGoat = getActiveDCAConfigsGoat;
+exports.getAllDCAConfigsGoat = getAllDCAConfigsGoat;
+exports.getUserDCAConfigsGoat = getUserDCAConfigsGoat;
+exports.getGoatDeployerBalance = getGoatDeployerBalance;
+const viem_1 = require("viem");
+const accounts_1 = require("viem/accounts");
+const dca_strategy_callback_goat_1 = require("../abis/dca-strategy-callback-goat");
+const contracts_1 = require("../config/contracts");
+// ── GOAT Testnet3 chain definition (not in viem built-ins) ───────────────────
+exports.goatTestnet3 = {
+    id: 48_816,
+    name: "GOAT Testnet3",
+    nativeCurrency: { name: "Bitcoin", symbol: "BTC", decimals: 18 },
+    rpcUrls: {
+        default: { http: [process.env.GOAT_TESTNET3_RPC_URL ?? "https://rpc.testnet3.goat.network"] },
+    },
+};
+const DCA_CONFIG_CREATED_SELECTOR = (0, viem_1.keccak256)((0, viem_1.toHex)("DCAConfigCreated(uint256,address,address,uint256,uint24,uint256)"));
+// ── Client setup ──────────────────────────────────────────────────────────────
+function getAccount() {
+    const pk = process.env.GOAT_DEPLOYER_PRIVATE_KEY;
+    if (!pk)
+        throw new Error("GOAT_DEPLOYER_PRIVATE_KEY not set");
+    const hex = pk.startsWith("0x") ? pk : `0x${pk}`;
+    return (0, accounts_1.privateKeyToAccount)(hex);
+}
+exports.goatPublicClient = (0, viem_1.createPublicClient)({
+    chain: exports.goatTestnet3,
+    transport: (0, viem_1.http)(exports.goatTestnet3.rpcUrls.default.http[0]),
+});
+function getGoatWalletClient() {
+    return (0, viem_1.createWalletClient)({
+        account: getAccount(),
+        chain: exports.goatTestnet3,
+        transport: (0, viem_1.http)(exports.goatTestnet3.rpcUrls.default.http[0]),
+    });
+}
+function getDCACallbackAddress() {
+    return contracts_1.GOAT_TESTNET3_CONTRACTS.dcaStrategyCallbackGoat;
+}
+/**
+ * Create a DCA config on DCAStrategyCallbackGoat.
+ * Owner-only — the server wallet (GOAT_DEPLOYER_PRIVATE_KEY) must be the contract owner.
+ */
+async function createDCAConfigGoat(params) {
+    const walletClient = getGoatWalletClient();
+    const callbackAddress = getDCACallbackAddress();
+    console.log(`[chain-goat] Creating DCA config on ${callbackAddress}...`);
+    console.log(`[chain-goat]   user=${params.user} tokenIn=${params.tokenIn} tokenOut=${params.tokenOut}`);
+    const txHash = await walletClient.writeContract({
+        address: callbackAddress,
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "createDCAConfig",
+        args: [
+            params.user,
+            params.tokenIn,
+            params.tokenOut,
+            params.amountPerSwap,
+            params.poolFee,
+            params.totalSwaps,
+            params.swapInterval,
+            params.minAmountOut,
+            params.duration,
+        ],
+    });
+    const receipt = await exports.goatPublicClient.waitForTransactionReceipt({ hash: txHash });
+    console.log(`[chain-goat] DCA tx confirmed in block ${receipt.blockNumber}`);
+    const configuredLog = receipt.logs.find((log) => log.address.toLowerCase() === callbackAddress.toLowerCase() &&
+        log.topics[0] === DCA_CONFIG_CREATED_SELECTOR);
+    if (!configuredLog || !configuredLog.topics[1]) {
+        throw new Error(`DCAConfigCreated event not found in tx ${txHash}. Logs found: ${receipt.logs.length}`);
+    }
+    const configId = BigInt(configuredLog.topics[1]);
+    console.log(`[chain-goat] DCA config #${configId} created`);
+    return { configId, txHash };
+}
+async function pauseDCAConfigGoat(configId) {
+    const walletClient = getGoatWalletClient();
+    const txHash = await walletClient.writeContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "pauseDCAConfig",
+        args: [configId],
+    });
+    await exports.goatPublicClient.waitForTransactionReceipt({ hash: txHash });
+    return txHash;
+}
+async function resumeDCAConfigGoat(configId) {
+    const walletClient = getGoatWalletClient();
+    const txHash = await walletClient.writeContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "resumeDCAConfig",
+        args: [configId],
+    });
+    await exports.goatPublicClient.waitForTransactionReceipt({ hash: txHash });
+    return txHash;
+}
+async function cancelDCAConfigGoat(configId) {
+    const walletClient = getGoatWalletClient();
+    const txHash = await walletClient.writeContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "cancelDCAConfig",
+        args: [configId],
+    });
+    await exports.goatPublicClient.waitForTransactionReceipt({ hash: txHash });
+    return txHash;
+}
+/**
+ * Call the PERMISSIONLESS executeDCAOrders(). Used by goat-scheduler.ts as the
+ * default caller — but this is not a privileged call; anyone with any wallet
+ * could make this exact same call. See /goat-research/06-automation-alternatives.md.
+ *
+ * IMPORTANT: pass an explicit gas limit. eth_estimateGas underestimates this
+ * function because it wraps the actual swap in try/catch — the outer call
+ * "succeeds" even when the inner swap silently fails, so the estimator can
+ * converge on a limit too low for the inner swap to actually complete. Hit
+ * this for real during testnet deployment; see goat-research/07.
+ */
+async function executeDCAOrdersGoat() {
+    const walletClient = getGoatWalletClient();
+    const callbackAddress = getDCACallbackAddress();
+    const txHash = await walletClient.writeContract({
+        address: callbackAddress,
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "executeDCAOrders",
+        gas: 2000000n,
+    });
+    const receipt = await exports.goatPublicClient.waitForTransactionReceipt({ hash: txHash });
+    const swapExecutedSelector = (0, viem_1.keccak256)((0, viem_1.toHex)("DCASwapExecuted(uint256,address,address,uint256,uint256)"));
+    const swapsExecuted = BigInt(receipt.logs.filter((log) => log.address.toLowerCase() === callbackAddress.toLowerCase() &&
+        log.topics[0] === swapExecutedSelector).length);
+    return { txHash, swapsExecuted };
+}
+async function getDCAConfigGoat(configId) {
+    const result = await exports.goatPublicClient.readContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "dcaConfigs",
+        args: [configId],
+    });
+    const r = result;
+    return {
+        id: BigInt(r[0]),
+        user: r[1],
+        tokenIn: r[2],
+        tokenOut: r[3],
+        amountPerSwap: BigInt(r[4]),
+        poolFee: Number(r[5]),
+        totalSwaps: BigInt(r[6]),
+        swapsExecuted: BigInt(r[7]),
+        totalAmountOut: BigInt(r[8]),
+        swapInterval: BigInt(r[9]),
+        minAmountOut: BigInt(r[10]),
+        status: Number(r[11]),
+        createdAt: BigInt(r[12]),
+        expiresAt: BigInt(r[13] ?? 0),
+        lastSwapAt: BigInt(r[14]),
+        consecutiveFailures: Number(r[15]),
+        lastAttemptAt: BigInt(r[16]),
+    };
+}
+async function getActiveDCAConfigsGoat() {
+    const result = await exports.goatPublicClient.readContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "getActiveConfigs",
+    });
+    return result.map((id) => BigInt(id));
+}
+/**
+ * Every config ever created, active or not. getActiveDCAConfigsGoat() is the
+ * right read for "what still needs executing"; this is the right read for the
+ * monitoring page, where a completed config that actually swapped is the most
+ * useful thing a visitor can see.
+ */
+async function getAllDCAConfigsGoat() {
+    const result = await exports.goatPublicClient.readContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "getAllConfigs",
+    });
+    return result.map((id) => BigInt(id));
+}
+async function getUserDCAConfigsGoat(userAddress) {
+    const result = await exports.goatPublicClient.readContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_goat_1.DCA_STRATEGY_CALLBACK_GOAT_ABI,
+        functionName: "getUserConfigs",
+        args: [userAddress],
+    });
+    return result.map((id) => BigInt(id));
+}
+/** Deployer wallet's native BTC balance on GOAT Testnet3 — used for a health check. */
+async function getGoatDeployerBalance() {
+    return exports.goatPublicClient.getBalance({ address: getAccount().address });
+}
+/** Minimum BTC balance below which the scheduler should stop trying to pay gas. */
+exports.MIN_GOAT_BALANCE = 1000000000n; // 1 gwei-equivalent of BTC — testnet gas is ~0.00013 gwei
+//# sourceMappingURL=chain-goat.js.map

@@ -22,10 +22,19 @@ exports.getProtectionConfig = getProtectionConfig;
 exports.getActiveConfigs = getActiveConfigs;
 exports.getHealthFactor = getHealthFactor;
 exports.getReactiveBalance = getReactiveBalance;
+exports.createDCAConfig = createDCAConfig;
+exports.getDCAConfig = getDCAConfig;
+exports.getActiveDCAConfigs = getActiveDCAConfigs;
+exports.getUserDCAConfigs = getUserDCAConfigs;
+exports.pauseDCAConfig = pauseDCAConfig;
+exports.resumeDCAConfig = resumeDCAConfig;
+exports.cancelDCAConfig = cancelDCAConfig;
+exports.getDCAReactiveBalance = getDCAReactiveBalance;
 const viem_1 = require("viem");
 const accounts_1 = require("viem/accounts");
 const chains_1 = require("viem/chains");
 const aave_protection_callback_1 = require("../abis/aave-protection-callback");
+const dca_strategy_callback_1 = require("../abis/dca-strategy-callback");
 const contracts_1 = require("../config/contracts");
 // ── Lasna chain definition (Reactive Network testnet, not in viem built-ins) ──
 exports.lasnaChain = {
@@ -222,4 +231,151 @@ async function getReactiveBalance() {
 }
 /** Minimum REACT balance (0.01 REACT) below which we refuse new registrations. */
 exports.MIN_RC_BALANCE = 10000000000000000n; // 0.01 ether
+// ── DCA Strategy helpers ─────────────────────────────────────────────────────
+const DCA_CONFIG_CREATED_SELECTOR = (0, viem_1.keccak256)((0, viem_1.toHex)("DCAConfigCreated(uint256,address,address,uint256,uint24,uint256)"));
+function getDCACallbackAddress() {
+    const addr = contracts_1.CONTRACTS.dcaStrategyCallback;
+    if (!addr || addr === "") {
+        throw new Error("DCA_STRATEGY_CALLBACK_ADDRESS not set in .env");
+    }
+    return addr;
+}
+function getDCAReactiveAddress() {
+    const addr = contracts_1.CONTRACTS.dcaStrategyReactive;
+    if (!addr || addr === "") {
+        throw new Error("DCA_STRATEGY_REACTIVE_ADDRESS not set in .env");
+    }
+    return addr;
+}
+/**
+ * Create a DCA config on DCAStrategyCallback.
+ *
+ * Called by the server after x402 payment is confirmed.
+ * The CC's createDCAConfig() is owner-only — the server wallet must be the CC owner.
+ *
+ * Returns the config ID parsed from the DCAConfigCreated event.
+ */
+async function createDCAConfig(params) {
+    const walletClient = getWalletClient();
+    const callbackAddress = getDCACallbackAddress();
+    console.log(`[chain] Creating DCA config on ${callbackAddress}...`);
+    console.log(`[chain]   user=${params.user} tokenIn=${params.tokenIn} tokenOut=${params.tokenOut}`);
+    console.log(`[chain]   amountPerSwap=${params.amountPerSwap} totalSwaps=${params.totalSwaps}`);
+    const txHash = await walletClient.writeContract({
+        address: callbackAddress,
+        abi: dca_strategy_callback_1.DCA_STRATEGY_CALLBACK_ABI,
+        functionName: "createDCAConfig",
+        args: [
+            params.user,
+            params.tokenIn,
+            params.tokenOut,
+            params.amountPerSwap,
+            params.poolFee,
+            params.totalSwaps,
+            params.swapInterval,
+            params.minAmountOut,
+            params.duration,
+        ],
+    });
+    console.log(`[chain] DCA tx submitted: ${txHash}`);
+    const receipt = await exports.publicClient.waitForTransactionReceipt({ hash: txHash });
+    console.log(`[chain] DCA tx confirmed in block ${receipt.blockNumber}`);
+    const configuredLog = receipt.logs.find((log) => log.address.toLowerCase() === callbackAddress.toLowerCase() &&
+        log.topics[0] === DCA_CONFIG_CREATED_SELECTOR);
+    if (!configuredLog || !configuredLog.topics[1]) {
+        throw new Error(`DCAConfigCreated event not found in tx ${txHash}. ` +
+            `Logs found: ${receipt.logs.length}`);
+    }
+    const configId = BigInt(configuredLog.topics[1]);
+    console.log(`[chain] DCA config #${configId} created`);
+    return { configId, txHash };
+}
+async function getDCAConfig(configId) {
+    const result = await exports.publicClient.readContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_1.DCA_STRATEGY_CALLBACK_ABI,
+        functionName: "dcaConfigs",
+        args: [configId],
+    });
+    const r = result;
+    return {
+        id: BigInt(r[0] ?? r.id),
+        user: r[1] ?? r.user,
+        tokenIn: r[2] ?? r.tokenIn,
+        tokenOut: r[3] ?? r.tokenOut,
+        amountPerSwap: BigInt(r[4] ?? r.amountPerSwap),
+        poolFee: Number(r[5] ?? r.poolFee),
+        totalSwaps: BigInt(r[6] ?? r.totalSwaps),
+        swapsExecuted: BigInt(r[7] ?? r.swapsExecuted),
+        totalAmountOut: BigInt(r[8] ?? r.totalAmountOut),
+        swapInterval: BigInt(r[9] ?? r.swapInterval),
+        minAmountOut: BigInt(r[10] ?? r.minAmountOut),
+        status: Number(r[11] ?? r.status),
+        createdAt: BigInt(r[12] ?? r.createdAt),
+        expiresAt: BigInt(r[13] ?? r.expiresAt ?? 0),
+        lastSwapAt: BigInt(r[14] ?? r.lastSwapAt),
+        consecutiveFailures: Number(r[15] ?? r.consecutiveFailures),
+        lastAttemptAt: BigInt(r[16] ?? r.lastAttemptAt),
+    };
+}
+async function getActiveDCAConfigs() {
+    const result = await exports.publicClient.readContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_1.DCA_STRATEGY_CALLBACK_ABI,
+        functionName: "getActiveConfigs",
+    });
+    return result.map((id) => BigInt(id));
+}
+async function getUserDCAConfigs(userAddress) {
+    const result = await exports.publicClient.readContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_1.DCA_STRATEGY_CALLBACK_ABI,
+        functionName: "getUserConfigs",
+        args: [userAddress],
+    });
+    return result.map((id) => BigInt(id));
+}
+async function pauseDCAConfig(configId) {
+    const walletClient = getWalletClient();
+    const txHash = await walletClient.writeContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_1.DCA_STRATEGY_CALLBACK_ABI,
+        functionName: "pauseDCAConfig",
+        args: [configId],
+    });
+    await exports.publicClient.waitForTransactionReceipt({ hash: txHash });
+    console.log(`[chain] DCA config #${configId} paused (tx: ${txHash})`);
+    return txHash;
+}
+async function resumeDCAConfig(configId) {
+    const walletClient = getWalletClient();
+    const txHash = await walletClient.writeContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_1.DCA_STRATEGY_CALLBACK_ABI,
+        functionName: "resumeDCAConfig",
+        args: [configId],
+    });
+    await exports.publicClient.waitForTransactionReceipt({ hash: txHash });
+    console.log(`[chain] DCA config #${configId} resumed (tx: ${txHash})`);
+    return txHash;
+}
+async function cancelDCAConfig(configId) {
+    const walletClient = getWalletClient();
+    const txHash = await walletClient.writeContract({
+        address: getDCACallbackAddress(),
+        abi: dca_strategy_callback_1.DCA_STRATEGY_CALLBACK_ABI,
+        functionName: "cancelDCAConfig",
+        args: [configId],
+    });
+    await exports.publicClient.waitForTransactionReceipt({ hash: txHash });
+    console.log(`[chain] DCA config #${configId} cancelled (tx: ${txHash})`);
+    return txHash;
+}
+/**
+ * Check the REACT balance of the DCA Reactive Contract on Lasna.
+ */
+async function getDCAReactiveBalance() {
+    const rcAddress = getDCAReactiveAddress();
+    return exports.lasnaClient.getBalance({ address: rcAddress });
+}
 //# sourceMappingURL=chain.js.map

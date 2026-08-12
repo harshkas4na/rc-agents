@@ -9,19 +9,23 @@
  * emit Callback(), and use self-callbacks for state persistence.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FAUCETS = exports.CHAIN_IDS = exports.CRON_TOPICS = exports.RN_CALLBACK_PROXY = exports.SERVICE_ADDR = exports.CALLBACK_PROXIES = exports.AAVE_ADDRESSES = exports.CONTRACTS = void 0;
+exports.FAUCETS = exports.GOAT_PROTOCOL_ADDRESSES = exports.GOAT_TESTNET3_CONTRACTS = exports.WGBTC_TESTNET3 = exports.GOAT_NETWORK = exports.CHAIN_IDS = exports.CRON_TOPICS = exports.RN_CALLBACK_PROXY = exports.SERVICE_ADDR = exports.CALLBACK_PROXIES = exports.AAVE_ADDRESSES = exports.CONTRACTS = void 0;
 // ── Deployed service contracts (set after deploy) ─────────────────────────────
 exports.CONTRACTS = {
     /** AaveProtectionCallback on Base Sepolia */
     aaveProtectionCallback: (process.env.AAVE_PROTECTION_CALLBACK_ADDRESS ?? ""),
     /** AaveProtectionReactive on Reactive Network */
     aaveProtectionReactive: (process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? ""),
+    /** DCAStrategyCallback on Base Sepolia */
+    dcaStrategyCallback: (process.env.DCA_STRATEGY_CALLBACK_ADDRESS ?? ""),
+    /** DCAStrategyReactive on Reactive Network */
+    dcaStrategyReactive: (process.env.DCA_STRATEGY_REACTIVE_ADDRESS ?? ""),
 };
 // ── Aave Protocol addresses on Base Sepolia ──────────────────────────────────
 exports.AAVE_ADDRESSES = {
-    LENDING_POOL: "0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951",
-    PROTOCOL_DATA_PROVIDER: "0x2d8A3C5677189723C4cB8873CfC9C8976FDF38Ac",
-    ADDRESSES_PROVIDER: "0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D",
+    LENDING_POOL: "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27",
+    PROTOCOL_DATA_PROVIDER: "0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b",
+    ADDRESSES_PROVIDER: "0xE4C23309117Aa30342BFaae6c95c6478e0A4Ad00",
 };
 // ── Callback Proxy addresses (delivers RC callbacks to CCs on each chain) ─────
 // Pass these as `_callbackSender` when deploying CCs via AbstractCallback.
@@ -59,10 +63,70 @@ exports.CHAIN_IDS = {
     LASNA: 5_318_007,
     SEPOLIA: 11_155_111,
     BASE_SEPOLIA: 84_532,
+    GOAT_TESTNET3: 48_816,
     // Mainnet
     REACTIVE: 1597,
     ETHEREUM: 1,
     BASE: 8453,
+    GOAT_MAINNET: 2345,
+};
+// ── GOAT Network (Bitcoin L2, BitVM2) ──────────────────────────────────────────
+// See /goat-research for full findings. Key facts baked in here:
+//
+//  - Native gas token is BTC (18 decimals), not ETH — every `--value` in deploy
+//    scripts and every funding-pipeline calculation needs re-denominating.
+//  - Reactive Network does NOT support GOAT as an origin or destination chain
+//    (verified against dev.reactive.network/origins-and-destinations). The
+//    RC/CC pattern above cannot be pointed at GOAT as-is — see
+//    goat-research/03-agentkit-and-technical-fit.md and
+//    goat-research/06-automation-alternatives.md for the replacement pattern
+//    (permissionless + bounty-incentivized functions, no privileged caller).
+//  - GoatSwap and BIMA turned out to be mainnet-only — verified directly
+//    against the Testnet3 explorer, not assumed (goat-research finding 4).
+//    So the DCA product's swap venue on Testnet3 is our own real Uniswap V3
+//    Core deployment (src/contracts/goat/), not GoatSwap's. Deployed and
+//    swap-tested end-to-end 2026-08-01 — see
+//    goat-research/07-testnet3-deployment.md for the full record, tx
+//    hashes, and the gas-estimation gotcha hit along the way.
+exports.GOAT_NETWORK = {
+    testnet3: {
+        chainId: exports.CHAIN_IDS.GOAT_TESTNET3,
+        rpcUrl: "https://rpc.testnet3.goat.network",
+        rpcBackup: "https://rpc.ankr.com/goat_testnet",
+        explorer: "https://explorer.testnet3.goat.network",
+        bridge: "https://bridge.testnet3.goat.network",
+        faucet: "https://bridge.testnet3.goat.network/faucet",
+        nativeCurrency: "BTC",
+    },
+    mainnet: {
+        chainId: exports.CHAIN_IDS.GOAT_MAINNET,
+        rpcUrl: "https://rpc.goat.network",
+        rpcBackup: "https://rpc.ankr.com/goat_mainnet",
+        archiveRpcUrl: "https://archive.goat.network",
+        explorer: "https://explorer.goat.network",
+        bridge: "https://bridge.goat.network",
+        nativeCurrency: "BTC",
+    },
+};
+/** GOAT Testnet3's canonical wrapped-native predeploy — same address as mainnet, confirmed live. */
+exports.WGBTC_TESTNET3 = "0xbC10000000000000000000000000000000000000";
+// Live on GOAT Testnet3, deployed 2026-08-01 — see goat-research/07-testnet3-deployment.md.
+// GoatSwap/BIMA have no Testnet3 deployment to point at (verified, not assumed), so this is
+// our own real Uniswap V3 Core (unmodified lib/v3-core) + a minimal permissionless-execution
+// DCA contract, not a placeholder.
+exports.GOAT_TESTNET3_CONTRACTS = {
+    uniswapV3Factory: "0x481294586d888EA5E409cd9719E79308c5996775",
+    demoUsdcWgbtcPool: "0x2e99414793de595ad6cdcc1aa0dfc6b33c1bce36",
+    demoUsdc: "0xF35b99BaE312FD59145F5eBE4482fD433d1C7E20",
+    miniSwapRouter: "0xB38E85B614EF50E2A60c9F4781A1b128f0fB7246",
+    liquidityHelper: "0x5f474dB0470e7102072517b0991e487Dd785cA4F",
+    dcaStrategyCallbackGoat: "0xd630cf0E2e9bcB0d76c25Eb87C1cBE9e3eDFdad7",
+};
+// Aave-equivalent (liquidation protection) not yet built — BIMA's Testnet3 presence is
+// unconfirmed beyond two mock-token contracts, needs direct verification first. See
+// goat-research/05-migration-plan.md.
+exports.GOAT_PROTOCOL_ADDRESSES = {
+    bimaMarket: (process.env.BIMA_MARKET_ADDRESS ?? ""),
 };
 // ── Faucets (send ETH, receive lREACT — max 5 ETH/tx) ────────────────────────
 exports.FAUCETS = {
