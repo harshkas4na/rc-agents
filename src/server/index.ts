@@ -43,7 +43,11 @@ import {
   formatUsdc,
   WETH_BASE_SEPOLIA,
   USDC_BASE_SEPOLIA,
+  DEMO_USDC_GOAT_TESTNET3,
+  WGBTC_GOAT_TESTNET3,
+  CHAIN,
 } from "../config/services";
+import { GOAT_TESTNET3_CONTRACTS } from "../config/contracts";
 import {
   createProtectionConfig,
   pauseProtectionConfig,
@@ -65,6 +69,20 @@ import {
   getDCAReactiveBalance,
 } from "./chain";
 import { fundRCGasPool } from "./bridge";
+import { renderLandingPage } from "./landing";
+import {
+  createDCAConfigGoat,
+  pauseDCAConfigGoat,
+  resumeDCAConfigGoat,
+  cancelDCAConfigGoat,
+  getDCAConfigGoat,
+  getActiveDCAConfigsGoat,
+  getUserDCAConfigsGoat,
+  getGoatDeployerBalance,
+  executeDCAOrdersGoat,
+  MIN_GOAT_BALANCE,
+} from "./chain-goat";
+import { startGoatScheduler } from "./goat-scheduler";
 import { parseAbi, type Address } from "viem";
 
 const app = express();
@@ -128,6 +146,25 @@ const routes: RoutesConfig = {
     },
     description: "DCA Strategy Activation — pays for Reactive Network automation gas to run periodic Uniswap V3 swaps",
   },
+  "POST /api/goat/dca/activate": {
+    accepts: {
+      scheme: "exact",
+      network: NETWORK,
+      payTo: PAYMENT_RECIPIENT,
+      price: async (context: any) => {
+        const body = context.adapter?.getBody?.() ?? {};
+        const duration = parseInt(body.duration ?? "86400", 10);
+        const clampedDuration = Math.max(3600, Math.min(2592000, isNaN(duration) ? 86400 : duration));
+        const priceBaseUnits = computePrice("dca-strategy-goat", clampedDuration);
+        return {
+          asset: USDC_BASE_SEPOLIA,
+          amount: priceBaseUnits.toString(),
+          extra: { name: "USDC", version: "2" },
+        };
+      },
+    },
+    description: "DCA Strategy on GOAT Testnet3 — payment is x402 USDC on Base Sepolia, execution is a real Uniswap V3 Core swap on GOAT, triggered by a genuinely permissionless on-chain function (no Reactive Network)",
+  },
 };
 
 app.use(paymentMiddleware(routes, resourceServer));
@@ -182,6 +219,14 @@ function extractPayerAddress(req: Request): `0x${string}` | null {
     return null;
   }
 }
+
+// ── Landing page (human-facing; the real interface is /openapi.yaml) ─────────
+
+app.get("/", (req: Request, res: Response) => {
+  const baseUrl = `${req.protocol}://${req.get("host")}`;
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(renderLandingPage(baseUrl));
+});
 
 // ── Free endpoints ────────────────────────────────────────────────────────────
 
@@ -723,6 +768,179 @@ app.get("/api/dca/user/:userAddress", async (req: Request, res: Response) => {
   }
 });
 
+// ── GOAT Testnet3 DCA Strategy endpoints ─────────────────────────────────────
+// No Reactive Network involved — see /goat-research. Payment is still x402 USDC
+// on Base Sepolia; execution is a real Uniswap V3 Core swap on GOAT Testnet3,
+// triggered by the permissionless executeDCAOrders() (goat-scheduler.ts polls
+// it, but anyone else could too).
+
+const dcaGoatCreateSchema = z.object({
+  user: z.string().regex(addressRegex),
+  amountPerSwap: z.string().regex(/^\d+$/),
+  totalSwaps: z.number().int().min(0).default(0),
+  swapInterval: z.number().int().min(60).default(60),
+  minAmountOut: z.string().regex(/^\d+$/).default("0"),
+  duration: z.number().int().min(3600).max(2592000).default(86400),
+});
+
+app.post("/api/goat/dca/activate", async (req: Request, res: Response) => {
+  const result = dcaGoatCreateSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid parameters", details: result.error.flatten().fieldErrors });
+    return;
+  }
+
+  const params = result.data;
+
+  try {
+    const balance = await getGoatDeployerBalance();
+    if (balance < MIN_GOAT_BALANCE) {
+      res.status(503).json({
+        error: "Service temporarily unavailable",
+        reason: "GOAT deployer wallet is low on BTC — the permissionless scheduler needs gas to poll.",
+      });
+      return;
+    }
+  } catch {
+    console.warn("[goat/dca/activate] Could not verify GOAT deployer balance");
+  }
+
+  try {
+    const { configId, txHash } = await createDCAConfigGoat({
+      user: params.user as Address,
+      tokenIn: DEMO_USDC_GOAT_TESTNET3 as Address,
+      tokenOut: WGBTC_GOAT_TESTNET3 as Address,
+      amountPerSwap: BigInt(params.amountPerSwap),
+      poolFee: 3000,
+      totalSwaps: BigInt(params.totalSwaps),
+      swapInterval: BigInt(params.swapInterval),
+      minAmountOut: BigInt(params.minAmountOut),
+      duration: BigInt(params.duration),
+    });
+
+    res.json({
+      success: true,
+      configId: configId.toString(),
+      txHash,
+      network: CHAIN.GOAT_TESTNET3.caip2,
+      user: params.user,
+      tokenIn: DEMO_USDC_GOAT_TESTNET3,
+      tokenOut: WGBTC_GOAT_TESTNET3,
+      amountPerSwap: params.amountPerSwap,
+      message:
+        `GOAT DCA config #${configId} active. A permissionless scheduler polls every ~60s ` +
+        `(anyone can call executeDCAOrders() — this isn't a privileged relay).`,
+      nextSteps: [
+        `Approve DCAStrategyCallbackGoat (${GOAT_TESTNET3_CONTRACTS.dcaStrategyCallbackGoat}) ` +
+          `to spend your ${DEMO_USDC_GOAT_TESTNET3} (dUSDC) on GOAT Testnet3.`,
+      ],
+    });
+  } catch (err: any) {
+    console.error("[goat/dca/activate] Failed:", err);
+    res.status(500).json({
+      error: "On-chain GOAT DCA config creation failed",
+      reason: err?.shortMessage ?? err?.message ?? "Unknown error",
+    });
+  }
+});
+
+app.post("/api/goat/dca/pause", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+  try {
+    const txHash = await pauseDCAConfigGoat(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "paused" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to pause GOAT DCA config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+app.post("/api/goat/dca/resume", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+  try {
+    const txHash = await resumeDCAConfigGoat(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "resumed" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to resume GOAT DCA config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+app.post("/api/goat/dca/cancel", async (req: Request, res: Response) => {
+  const result = configIdSchema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({ error: "Invalid configId", details: result.error.flatten().fieldErrors });
+    return;
+  }
+  try {
+    const txHash = await cancelDCAConfigGoat(BigInt(result.data.configId));
+    res.json({ success: true, configId: result.data.configId, txHash, action: "cancelled" });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to cancel GOAT DCA config", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
+app.get("/api/goat/dca/config/:configId", async (req: Request, res: Response) => {
+  let id: bigint;
+  try {
+    id = BigInt(req.params.configId);
+  } catch {
+    res.status(400).json({ error: "Invalid config ID" });
+    return;
+  }
+
+  try {
+    const config = await getDCAConfigGoat(id);
+    const statusLabels = ["Active", "Paused", "Cancelled", "Completed"];
+
+    res.json({
+      configId: config.id.toString(),
+      user: config.user,
+      tokenIn: config.tokenIn,
+      tokenOut: config.tokenOut,
+      amountPerSwap: config.amountPerSwap.toString(),
+      totalSwaps: config.totalSwaps.toString(),
+      swapsExecuted: config.swapsExecuted.toString(),
+      totalAmountOut: config.totalAmountOut.toString(),
+      status: statusLabels[config.status] ?? "Unknown",
+      createdAt: Number(config.createdAt),
+      expiresAt: config.expiresAt > 0n ? Number(config.expiresAt) : null,
+      lastSwapAt: Number(config.lastSwapAt),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch GOAT DCA config", reason: err.message });
+  }
+});
+
+app.get("/api/goat/dca/configs", async (_req: Request, res: Response) => {
+  try {
+    const activeConfigIds = await getActiveDCAConfigsGoat();
+    res.json({ activeConfigIds: activeConfigIds.map((id) => id.toString()), count: activeConfigIds.length });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch active GOAT DCA configs", reason: err.message });
+  }
+});
+
+app.get("/api/goat/dca/user/:userAddress", async (req: Request, res: Response) => {
+  const { userAddress } = req.params;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(userAddress)) {
+    res.status(400).json({ error: "Invalid address" });
+    return;
+  }
+  try {
+    const configIds = await getUserDCAConfigsGoat(userAddress as Address);
+    res.json({ userAddress, configIds: configIds.map((id) => id.toString()), count: configIds.length });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch user's GOAT DCA configs", reason: err.message });
+  }
+});
+
 // ── Health check ──────────────────────────────────────────────────────────────
 
 app.get("/health", async (_req: Request, res: Response) => {
@@ -741,7 +959,17 @@ app.get("/health", async (_req: Request, res: Response) => {
       dcaConfigured = false;
     }
 
-    const allFunded = rcFunded && (dcaRcFunded || !dcaConfigured);
+    let goatBalance = -1n;
+    let goatFunded = false;
+    let goatConfigured = true;
+    try {
+      goatBalance = await getGoatDeployerBalance();
+      goatFunded = goatBalance >= MIN_GOAT_BALANCE;
+    } catch {
+      goatConfigured = false;
+    }
+
+    const allFunded = rcFunded && (dcaRcFunded || !dcaConfigured) && (goatFunded || !goatConfigured);
 
     res.json({
       status: allFunded ? "ok" : "degraded",
@@ -753,6 +981,13 @@ app.get("/health", async (_req: Request, res: Response) => {
         ? {
             reactiveContractBalance: dcaRcBalance >= 0n ? dcaRcBalance.toString() : "unreachable",
             reactiveContractFunded: dcaRcBalance >= 0n ? dcaRcFunded : "unknown",
+          }
+        : { status: "not configured" },
+      dcaStrategyGoat: goatConfigured
+        ? {
+            note: "No Reactive Network — permissionless executeDCAOrders(), polled by goat-scheduler.ts",
+            deployerBalance: goatBalance >= 0n ? goatBalance.toString() : "unreachable",
+            deployerFunded: goatBalance >= 0n ? goatFunded : "unknown",
           }
         : { status: "not configured" },
     });
@@ -773,6 +1008,23 @@ app.get("/openapi.yaml", (_req: Request, res: Response) => {
   res.send(fs.readFileSync(specPath, "utf-8"));
 });
 
+// ── GOAT scheduler tick (single-shot, for Vercel Cron) ────────────────────────
+// setInterval (goat-scheduler.ts) only works on a persistent process — it does
+// nothing useful on Vercel's serverless functions, which don't stay alive
+// between requests. This endpoint is the serverless-compatible equivalent:
+// call executeDCAOrders() once per hit. Wire it to Vercel Cron in vercel.json,
+// or any external scheduler, to get the same periodic polling in production.
+// Still just as permissionless underneath — this endpoint is a convenience
+// for triggering the call, not a privileged path; see chain-goat.ts.
+app.post("/api/goat/dca/tick", async (_req: Request, res: Response) => {
+  try {
+    const { txHash, swapsExecuted } = await executeDCAOrdersGoat();
+    res.json({ success: true, txHash, swapsExecuted: swapsExecuted.toString() });
+  } catch (err: any) {
+    res.status(500).json({ error: "GOAT DCA tick failed", reason: err?.shortMessage ?? err?.message });
+  }
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
 if (process.env.VERCEL !== "1") {
@@ -785,6 +1037,8 @@ if (process.env.VERCEL !== "1") {
     console.log(`[server] Aave RC:     ${process.env.AAVE_PROTECTION_REACTIVE_ADDRESS ?? "NOT SET"}`);
     console.log(`[server] DCA CC:      ${process.env.DCA_STRATEGY_CALLBACK_ADDRESS ?? "NOT SET"}`);
     console.log(`[server] DCA RC:      ${process.env.DCA_STRATEGY_REACTIVE_ADDRESS ?? "NOT SET"}`);
+    console.log(`[server] GOAT DCA CC: ${GOAT_TESTNET3_CONTRACTS.dcaStrategyCallbackGoat}`);
+    startGoatScheduler();
   });
 }
 

@@ -5,3 +5,17 @@ libs = ["lib"]
 optimizer = true
 optimizer_runs = 200
 via_ir = true
+
+# Uniswap V3 core (lib/v3-core) is solc =0.7.6 and its modifiers aren't
+# supported by the IR pipeline — build it in a separate profile with
+# via_ir off and the canonical Uniswap deployment settings (runs=800,
+# istanbul) so the bytecode matches the real, audited mainnet deployment.
+# Usage: FOUNDRY_PROFILE=v3core forge build
+[profile.v3core]
+src = "lib/v3-core/contracts"
+out = "out-v3core"
+libs = ["lib"]
+optimizer = true
+optimizer_runs = 200
+evm_version = "istanbul"
+via_ir = false

@@ -61,6 +61,12 @@ tags:
     description: Query on-chain state — no payment required
   - name: DCA
     description: DCA (Dollar Cost Averaging) strategy on Uniswap V3
+  - name: GOAT
+    description: |
+      DCA on GOAT Network Testnet3. No Reactive Network — the execution function
+      is genuinely permissionless (anyone can call it, not just this server).
+      Payment is still x402 USDC on Base Sepolia; execution is a real Uniswap V3
+      Core swap on GOAT. See https://github.com/harshkas4na/rc-agents/tree/main/goat-research
   - name: Health
     description: Server health check
 
@@ -730,6 +736,258 @@ paths:
       responses:
         "200":
           description: User's DCA config IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserDCAConfigsResponse"
+        "400":
+          description: Invalid address
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/goat/dca/activate:
+    post:
+      operationId: activateGoatDCAStrategy
+      tags: [GOAT]
+      summary: Activate DCA automation on GOAT Testnet3 (x402-gated)
+      description: |
+        Pays for a DCA config on GOAT Network Testnet3. tokenIn/tokenOut are
+        fixed (dUSDC → WGBTC, fee tier 3000) against a real, live Uniswap V3
+        Core pool — see /goat-research/07-testnet3-deployment.md for the
+        deployment record and addresses.
+
+        **This endpoint requires x402 payment in USDC on Base Sepolia
+        (eip155:84532) — the payment rail is unchanged; only DCA execution
+        moves to GOAT.**
+
+        ### Flow (no Reactive Network)
+        1. Agent calls this endpoint with x402 payment (price based on `duration`)
+        2. Server creates the DCA config on-chain on GOAT Testnet3
+        3. Server returns `configId`, tx hash, and token approval instructions
+        4. Agent approves the DCA contract to spend their `dUSDC` on GOAT Testnet3
+        5. A permissionless on-chain function (`executeDCAOrders()`) executes
+           swaps on a ~60s poll — this server's scheduler is the default
+           caller, but it is NOT a privileged relay; anyone could call the
+           same function and collect the same bounty (if funded)
+      security:
+        - x402: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoatDCAActivateRequest"
+            examples:
+              dUsdcToWgbtc:
+                summary: DCA 1 dUSDC into WGBTC, 5 swaps, every 60s
+                value:
+                  user: "0xYourWalletAddress"
+                  amountPerSwap: "1000000"
+                  totalSwaps: 5
+                  swapInterval: 60
+                  minAmountOut: "0"
+                  duration: 3600
+      responses:
+        "200":
+          description: GOAT DCA config created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoatDCAActivateResponse"
+        "400":
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ValidationErrorResponse"
+        "402":
+          description: Payment required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentRequiredResponse"
+        "503":
+          description: GOAT deployer wallet underfunded (needs testnet BTC for gas)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/goat/dca/pause:
+    post:
+      operationId: pauseGoatDCAConfig
+      tags: [GOAT]
+      summary: Pause a GOAT DCA config
+      description: No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/goat/dca/resume:
+    post:
+      operationId: resumeGoatDCAConfig
+      tags: [GOAT]
+      summary: Resume a paused GOAT DCA config
+      description: No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/goat/dca/cancel:
+    post:
+      operationId: cancelGoatDCAConfig
+      tags: [GOAT]
+      summary: Cancel a GOAT DCA config permanently
+      description: Irreversible. No payment required.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigIdRequest"
+      responses:
+        "200":
+          description: Config cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigActionResponse"
+        "400":
+          description: Invalid configId
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: On-chain transaction failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/goat/dca/config/{configId}:
+    get:
+      operationId: getGoatDCAConfig
+      tags: [GOAT]
+      summary: Get GOAT DCA config details
+      description: |
+        Fetches on-chain state directly from DCAStrategyCallbackGoat on GOAT
+        Testnet3. No payment required.
+      parameters:
+        - name: configId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: GOAT DCA config details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GoatDCAConfigResponse"
+        "400":
+          description: Invalid config ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/goat/dca/configs:
+    get:
+      operationId: listActiveGoatDCAConfigs
+      tags: [GOAT]
+      summary: List all active GOAT DCA config IDs
+      description: No payment required.
+      responses:
+        "200":
+          description: Active GOAT DCA config IDs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActiveConfigsResponse"
+        "500":
+          description: Failed to fetch from chain
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/goat/dca/user/{userAddress}:
+    get:
+      operationId: getUserGoatDCAConfigs
+      tags: [GOAT]
+      summary: Get all GOAT DCA configs for a user
+      description: No payment required.
+      parameters:
+        - name: userAddress
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^0x[a-fA-F0-9]{40}$"
+      responses:
+        "200":
+          description: User's GOAT DCA config IDs
           content:
             application/json:
               schema:
@@ -1467,6 +1725,126 @@ components:
             type: string
           description: All DCA config IDs belonging to this user (any status)
           example: ["0", "3", "7"]
+
+    GoatDCAActivateRequest:
+      type: object
+      required:
+        - user
+        - amountPerSwap
+      properties:
+        user:
+          type: string
+          pattern: "^0x[a-fA-F0-9]{40}$"
+          description: Wallet address whose dUSDC will be swapped (the agent)
+          example: "0xYourWalletAddress"
+        amountPerSwap:
+          type: string
+          pattern: "^\\d+$"
+          description: Amount of dUSDC per swap (6 decimals, e.g. "1000000" = 1 dUSDC). tokenIn/tokenOut/poolFee are fixed (dUSDC → WGBTC, fee 3000).
+          example: "1000000"
+        totalSwaps:
+          type: integer
+          minimum: 0
+          description: Total swaps to execute (0 = unlimited, runs until expiry or cancel)
+          default: 0
+          example: 5
+        swapInterval:
+          type: integer
+          minimum: 60
+          description: Minimum seconds between swaps (min 60 — matches the scheduler's poll interval)
+          default: 60
+          example: 60
+        minAmountOut:
+          type: string
+          pattern: "^\\d+$"
+          description: Minimum WGBTC per swap for slippage protection (0 = no limit)
+          default: "0"
+          example: "0"
+        duration:
+          type: integer
+          minimum: 3600
+          maximum: 2592000
+          description: Duration in seconds. Determines the x402 payment amount.
+          default: 86400
+          example: 3600
+
+    GoatDCAActivateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        configId:
+          type: string
+          example: "0"
+        txHash:
+          type: string
+          description: GOAT Testnet3 transaction hash for the config creation
+          example: "0x150a1e30..."
+        network:
+          type: string
+          example: "eip155:48816"
+        user:
+          type: string
+          example: "0xYourWalletAddress"
+        tokenIn:
+          type: string
+          description: dUSDC (testnet-only demo token) address on GOAT Testnet3
+          example: "0xF35b99BaE312FD59145F5eBE4482fD433d1C7E20"
+        tokenOut:
+          type: string
+          description: WGBTC (canonical GOAT wrapped-native predeploy) address
+          example: "0xbC10000000000000000000000000000000000000"
+        amountPerSwap:
+          type: string
+          example: "1000000"
+        message:
+          type: string
+          example: "GOAT DCA config #0 active. A permissionless scheduler polls every ~60s."
+        nextSteps:
+          type: array
+          items:
+            type: string
+
+    GoatDCAConfigResponse:
+      type: object
+      properties:
+        configId:
+          type: string
+          example: "0"
+        user:
+          type: string
+          example: "0xAgentWallet..."
+        tokenIn:
+          type: string
+          example: "0xF35b99BaE312FD59145F5eBE4482fD433d1C7E20"
+        tokenOut:
+          type: string
+          example: "0xbC10000000000000000000000000000000000000"
+        amountPerSwap:
+          type: string
+          example: "1000000"
+        totalSwaps:
+          type: string
+          example: "5"
+        swapsExecuted:
+          type: string
+          example: "1"
+        totalAmountOut:
+          type: string
+          description: Cumulative WGBTC received across all swaps (18 decimals)
+          example: "83772080973"
+        status:
+          type: string
+          enum: [Active, Paused, Cancelled, Completed]
+          example: Completed
+        createdAt:
+          type: integer
+        expiresAt:
+          type: integer
+          nullable: true
+        lastSwapAt:
+          type: integer
         count:
           type: integer
           example: 3

@@ -11,5 +11,11 @@
       "src": "/(.*)",
       "dest": "src/server/index.ts"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/goat/dca/tick",
+      "schedule": "0 0 * * *"
+    }
   ]
 }

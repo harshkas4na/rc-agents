@@ -4,6 +4,42 @@ An automation marketplace where AI agents pay for autonomous DeFi protection usi
 
 **What it does:** An AI agent sends `$0.30` in USDC, and gets Aave liquidation protection that runs autonomously for 24 hours — no accounts, no signup, no human in the loop.
 
+---
+
+## The GOAT Network expansion (2026-08-01)
+
+This project started as a Reactive Network showcase — an AI agent pays, a Reactive Contract watches an Aave position forever, no bots, no keepers. It's still live: `rc-agents.vercel.app/health` returns 200 today, the Aave protection service is funded and working.
+
+The reason to touch it again was [GOAT Network's AI Agent Builder Grants Program](https://www.goat.network/builder-program) — GOAT is a Bitcoin L2 built on BitVM2, and the program funds exactly the shape of thing this project already is: an agent-native application with a working product, a real transaction, and repeatable economic activity. So the question became: what does it take to actually run this on GOAT, not just claim it does?
+
+**The honest answer turned out to be more interesting than "redeploy the contracts."** Three things had to be checked, not assumed, before writing a line of new Solidity:
+
+1. **Does Reactive Network even reach GOAT?** No. Checked directly against `dev.reactive.network/origins-and-destinations` — GOAT isn't in the origin or destination list, mainnet or testnet. Chainlink Automation and Gelato don't cover it either; GOAT's BitVM2 testnet only launched in January 2026, too new for the big automation networks to have integrated. This is the load-bearing finding: the RC/CC pattern that makes rc-agents *rc-agents* has nowhere to run on GOAT. A straight port isn't an option.
+
+2. **Is GoatSwap (GOAT's own Uniswap V3-style DEX) usable for the demo?** Checked its `SwapRouter02` on-chain — 48,226 real transactions on GOAT's Alpha Mainnet, genuinely live. Same address on Testnet3: an empty EOA, zero transactions. GoatSwap is mainnet-only. So is BIMA, GOAT's BTC-lending protocol — and BIMA turned out to be a worse fit than the address gap suggested anyway: its own docs describe borrowing as *"permissioned institutional borrowing"* with collateral held in *"qualified custody"* — off-chain, KYC'd, not an open on-chain money market an AI agent could use, and not something with a purely on-chain health factor to protect. That rules BIMA out as the Aave-equivalent entirely, not just for now.
+
+3. **So what replaces Reactive Network's "no bots, no keepers" story?** The realization: Reactive Network, Chainlink Automation, and Gelato are all, underneath, the same thing — a marketplace of off-chain callers hitting a public on-chain function. What makes automation trustless isn't *who* calls it, it's that the function is open to *anyone* and does exactly what its audited code says. GOAT already has a native example of this pattern: BIMA's own liquidations are permissionless and bounty-incentivized, not automated by any privileged relay. So that's what got built instead of a Reactive Network substitute.
+
+### What's actually live on GOAT Testnet3 right now
+
+Not a plan — every address below is deployed, and a real swap has executed through the full pipeline on-chain.
+
+| Contract | Address | What it is |
+|---|---|---|
+| UniswapV3Factory | `0x481294586d888EA5E409cd9719E79308c5996775` | Unmodified, audited Uniswap V3 Core (`lib/v3-core`) — GoatSwap has no testnet3 deployment to use, so this is our own |
+| dUSDC/WGBTC Pool | `0x2e99414793de595ad6cdcc1aa0dfc6b33c1bce36` | Real pool, real liquidity, created via the factory above |
+| DCAStrategyCallbackGoat | `0xd630cf0E2e9bcB0d76c25Eb87C1cBE9e3eDFdad7` | The automation contract — `executeDCAOrders()` has **no access-control modifier at all** |
+
+Deployed on a wallet generated for this purpose, funded from GOAT's public testnet faucet, at a gas price of roughly 0.00013 gwei — the whole build (7 contract deploys, a seeded liquidity position, and two end-to-end swap tests) cost about **5 microBTC**. Full record, transaction hashes, and a real `eth_estimateGas` gotcha hit and fixed along the way: [`goat-research/07-testnet3-deployment.md`](./goat-research/07-testnet3-deployment.md).
+
+The server now exposes this as a third product, [`/api/goat/dca/*`](./openapi.yaml), alongside the two Base Sepolia services below — x402 payment stays on Base Sepolia (that's where the facilitator is), only DCA execution moves to GOAT. A scheduler (`src/server/goat-scheduler.ts`) polls the permissionless execution function every 60 seconds; it's a convenience, not a requirement — anyone else with any wallet could call the same function and it would work identically.
+
+### What's still open
+
+Liquidation protection (the Aave-equivalent) doesn't have a home on GOAT yet — that's not a todo, it's a real gap in what's currently live on the chain, worth rechecking as the ecosystem matures rather than forcing a fit. Full reasoning, the grant program details, and the architecture decision trail: [`/goat-research`](./goat-research/README.md).
+
+---
+
 ```
 AI Agent (wallet = identity)
     |

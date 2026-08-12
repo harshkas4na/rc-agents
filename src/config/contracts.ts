@@ -78,10 +78,75 @@ export const CHAIN_IDS = {
   LASNA: 5_318_007,
   SEPOLIA: 11_155_111,
   BASE_SEPOLIA: 84_532,
+  GOAT_TESTNET3: 48_816,
   // Mainnet
   REACTIVE: 1597,
   ETHEREUM: 1,
   BASE: 8453,
+  GOAT_MAINNET: 2345,
+} as const;
+
+// ── GOAT Network (Bitcoin L2, BitVM2) ──────────────────────────────────────────
+// See /goat-research for full findings. Key facts baked in here:
+//
+//  - Native gas token is BTC (18 decimals), not ETH — every `--value` in deploy
+//    scripts and every funding-pipeline calculation needs re-denominating.
+//  - Reactive Network does NOT support GOAT as an origin or destination chain
+//    (verified against dev.reactive.network/origins-and-destinations). The
+//    RC/CC pattern above cannot be pointed at GOAT as-is — see
+//    goat-research/03-agentkit-and-technical-fit.md and
+//    goat-research/06-automation-alternatives.md for the replacement pattern
+//    (permissionless + bounty-incentivized functions, no privileged caller).
+//  - GoatSwap and BIMA turned out to be mainnet-only — verified directly
+//    against the Testnet3 explorer, not assumed (goat-research finding 4).
+//    So the DCA product's swap venue on Testnet3 is our own real Uniswap V3
+//    Core deployment (src/contracts/goat/), not GoatSwap's. Deployed and
+//    swap-tested end-to-end 2026-08-01 — see
+//    goat-research/07-testnet3-deployment.md for the full record, tx
+//    hashes, and the gas-estimation gotcha hit along the way.
+
+export const GOAT_NETWORK = {
+  testnet3: {
+    chainId: CHAIN_IDS.GOAT_TESTNET3,
+    rpcUrl: "https://rpc.testnet3.goat.network",
+    rpcBackup: "https://rpc.ankr.com/goat_testnet",
+    explorer: "https://explorer.testnet3.goat.network",
+    bridge: "https://bridge.testnet3.goat.network",
+    faucet: "https://bridge.testnet3.goat.network/faucet",
+    nativeCurrency: "BTC",
+  },
+  mainnet: {
+    chainId: CHAIN_IDS.GOAT_MAINNET,
+    rpcUrl: "https://rpc.goat.network",
+    rpcBackup: "https://rpc.ankr.com/goat_mainnet",
+    archiveRpcUrl: "https://archive.goat.network",
+    explorer: "https://explorer.goat.network",
+    bridge: "https://bridge.goat.network",
+    nativeCurrency: "BTC",
+  },
+} as const;
+
+/** GOAT Testnet3's canonical wrapped-native predeploy — same address as mainnet, confirmed live. */
+export const WGBTC_TESTNET3 = "0xbC10000000000000000000000000000000000000" as Address;
+
+// Live on GOAT Testnet3, deployed 2026-08-01 — see goat-research/07-testnet3-deployment.md.
+// GoatSwap/BIMA have no Testnet3 deployment to point at (verified, not assumed), so this is
+// our own real Uniswap V3 Core (unmodified lib/v3-core) + a minimal permissionless-execution
+// DCA contract, not a placeholder.
+export const GOAT_TESTNET3_CONTRACTS = {
+  uniswapV3Factory: "0x481294586d888EA5E409cd9719E79308c5996775" as Address,
+  demoUsdcWgbtcPool: "0x2e99414793de595ad6cdcc1aa0dfc6b33c1bce36" as Address,
+  demoUsdc: "0xF35b99BaE312FD59145F5eBE4482fD433d1C7E20" as Address,
+  miniSwapRouter: "0xB38E85B614EF50E2A60c9F4781A1b128f0fB7246" as Address,
+  liquidityHelper: "0x5f474dB0470e7102072517b0991e487Dd785cA4F" as Address,
+  dcaStrategyCallbackGoat: "0xd630cf0E2e9bcB0d76c25Eb87C1cBE9e3eDFdad7" as Address,
+} as const;
+
+// Aave-equivalent (liquidation protection) not yet built — BIMA's Testnet3 presence is
+// unconfirmed beyond two mock-token contracts, needs direct verification first. See
+// goat-research/05-migration-plan.md.
+export const GOAT_PROTOCOL_ADDRESSES = {
+  bimaMarket: (process.env.BIMA_MARKET_ADDRESS ?? "") as Address,
 } as const;
 
 // ── Faucets (send ETH, receive lREACT — max 5 ETH/tx) ────────────────────────

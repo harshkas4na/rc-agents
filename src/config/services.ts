@@ -52,6 +52,23 @@ export const SERVICES: Record<string, ServiceDefinition> = {
     callbackAddressEnv: "DCA_STRATEGY_CALLBACK_ADDRESS",
     reactiveAddressEnv: "DCA_STRATEGY_REACTIVE_ADDRESS",
   },
+  "dca-strategy-goat": {
+    id: "dca-strategy-goat",
+    name: "DCA Strategy (GOAT Testnet3)",
+    description:
+      "Automated Dollar Cost Averaging on GOAT Network Testnet3, against a real, live " +
+      "Uniswap V3 Core pool (dUSDC/WGBTC). No Reactive Network involved — the execution " +
+      "function is genuinely permissionless (anyone can call it, not just this server), " +
+      "since Reactive Network does not support GOAT as a destination chain. Payment is " +
+      "still x402 USDC on Base Sepolia; execution happens on GOAT.",
+    trigger: "Server-run scheduler polls every 60s + swap interval elapsed (permissionless — anyone could poll instead)",
+    action: "Swap dUSDC → WGBTC via a real Uniswap V3 Core pool on GOAT Testnet3",
+    pricePerDay: 200_000, // $0.20 / day
+    minDuration: 3_600,   // 1 hour
+    maxDuration: 2_592_000, // 30 days
+    callbackAddressEnv: "", // GOAT_TESTNET3_CONTRACTS.dcaStrategyCallbackGoat — not env-sourced, see src/config/contracts.ts
+    reactiveAddressEnv: "", // none — no Reactive Network on GOAT
+  },
 };
 
 // ── Pricing ────────────────────────────────────────────────────────────────────
@@ -96,8 +113,14 @@ export function formatUsdc(baseUnits: bigint): string {
 export const CHAIN = {
   BASE_SEPOLIA: { id: 84532, caip2: "eip155:84532" },
   LASNA: { id: 5318007, caip2: "eip155:5318007" },
+  GOAT_TESTNET3: { id: 48816, caip2: "eip155:48816" },
 } as const;
 
 export const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e" as const;
 export const WETH_BASE_SEPOLIA = "0x4200000000000000000000000000000000000006" as const;
 export const AAVE_POOL_BASE_SEPOLIA = "0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27" as const;
+
+/** GOAT Testnet3's canonical wrapped-native predeploy (WGBTC). Same address as mainnet. */
+export const WGBTC_GOAT_TESTNET3 = "0xbC10000000000000000000000000000000000000" as const;
+/** Testnet-only demo USDC stand-in — see src/contracts/goat/DemoUSDC.sol. */
+export const DEMO_USDC_GOAT_TESTNET3 = "0xF35b99BaE312FD59145F5eBE4482fD433d1C7E20" as const;
