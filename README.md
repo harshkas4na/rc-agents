@@ -1,511 +1,302 @@
-# rc-agents — x402 × Reactive Smart Contracts
+# rc-agents
 
-An automation marketplace where AI agents pay for autonomous DeFi protection using x402 micropayments and Reactive Smart Contracts.
+**Autonomous on-chain automation that AI agents can buy with a single HTTP request.**
 
-**What it does:** An AI agent sends `$0.30` in USDC, and gets Aave liquidation protection that runs autonomously for 24 hours — no accounts, no signup, no human in the loop.
+An agent sends `$0.24` of USDC. It gets back a smart contract that keeps working after the agent is gone — dollar-cost averaging on a Bitcoin L2, or defending a lending position against liquidation. No account, no API key, no signup, no human in the loop.
+
+**Live:** [rc-agents.vercel.app](https://rc-agents.vercel.app) · [`/skills.md`](https://rc-agents.vercel.app/skills.md) (for agents) · [`/openapi.yaml`](https://rc-agents.vercel.app/openapi.yaml) (OpenAPI 3.1) · [`/api/dashboard`](https://rc-agents.vercel.app/api/dashboard) (live on-chain state)
 
 ---
 
-## The GOAT Network expansion (2026-08-01)
+## The problem this solves
 
-This project started as a Reactive Network showcase — an AI agent pays, a Reactive Contract watches an Aave position forever, no bots, no keepers. It's still live: `rc-agents.vercel.app/health` returns 200 today, the Aave protection service is funded and working.
+An AI agent can decide. It cannot *persist*.
 
-The reason to touch it again was [GOAT Network's AI Agent Builder Grants Program](https://www.goat.network/builder-program) — GOAT is a Bitcoin L2 built on BitVM2, and the program funds exactly the shape of thing this project already is: an agent-native application with a working product, a real transaction, and repeatable economic activity. So the question became: what does it take to actually run this on GOAT, not just claim it does?
+Ask an agent to buy a little BTC every hour for the next month, or to keep your position from being liquidated overnight, and it hits a wall that has nothing to do with intelligence: when the process exits, the intent dies with it. The usual workarounds all reintroduce the thing agents were supposed to remove — a server someone has to keep alive, a keeper bot someone has to trust, a custodial account someone has to open.
 
-**The honest answer turned out to be more interesting than "redeploy the contracts."** Three things had to be checked, not assumed, before writing a line of new Solidity:
+**rc-agents sells persistence as a metered service.** The agent pays per use over plain HTTP using [x402](https://x402.org), and an audited contract carries out the instruction autonomously for the duration purchased. The agent's wallet *is* its identity. There is nothing to sign up for, and nothing to trust beyond code that anyone can read and anyone can call.
 
-1. **Does Reactive Network even reach GOAT?** No. Checked directly against `dev.reactive.network/origins-and-destinations` — GOAT isn't in the origin or destination list, mainnet or testnet. Chainlink Automation and Gelato don't cover it either; GOAT's BitVM2 testnet only launched in January 2026, too new for the big automation networks to have integrated. This is the load-bearing finding: the RC/CC pattern that makes rc-agents *rc-agents* has nowhere to run on GOAT. A straight port isn't an option.
+That is the shape of an agent-native business: a machine-readable service, priced in fractions of a cent, that another machine can discover, evaluate, purchase, and verify without a human ever opening a browser.
 
-2. **Is GoatSwap (GOAT's own Uniswap V3-style DEX) usable for the demo?** Checked its `SwapRouter02` on-chain — 48,226 real transactions on GOAT's Alpha Mainnet, genuinely live. Same address on Testnet3: an empty EOA, zero transactions. GoatSwap is mainnet-only. So is BIMA, GOAT's BTC-lending protocol — and BIMA turned out to be a worse fit than the address gap suggested anyway: its own docs describe borrowing as *"permissioned institutional borrowing"* with collateral held in *"qualified custody"* — off-chain, KYC'd, not an open on-chain money market an AI agent could use, and not something with a purely on-chain health factor to protect. That rules BIMA out as the Aave-equivalent entirely, not just for now.
+---
 
-3. **So what replaces Reactive Network's "no bots, no keepers" story?** The realization: Reactive Network, Chainlink Automation, and Gelato are all, underneath, the same thing — a marketplace of off-chain callers hitting a public on-chain function. What makes automation trustless isn't *who* calls it, it's that the function is open to *anyone* and does exactly what its audited code says. GOAT already has a native example of this pattern: BIMA's own liquidations are permissionless and bounty-incentivized, not automated by any privileged relay. So that's what got built instead of a Reactive Network substitute.
+## What's running right now
 
-### What's actually live on GOAT Testnet3 right now
+Every number below is a live on-chain read, visible on the [dashboard](https://rc-agents.vercel.app) and independently checkable on a block explorer.
 
-Not a plan — every address below is deployed, and a real swap has executed through the full pipeline on-chain.
+| Service | Executes on | Automation model | Price |
+|---|---|---|---|
+| **DCA Strategy** | GOAT Testnet3 (Bitcoin L2) | Permissionless on-chain function | $0.20/day |
+| **Aave Liquidation Protection** | Base Sepolia | Reactive Smart Contracts | $0.25/day |
+
+Payment is always USDC on Base Sepolia — that's where the x402 facilitator lives. Only *execution* moves between chains. All services are on testnet; this is a working system, not a custodian of real funds.
+
+---
+
+## On GOAT Network
+
+GOAT is a Bitcoin L2 built on BitVM2 — Bitcoin security with an EVM execution layer, and BTC itself as the gas token. That combination is the interesting one for agent payments: an agent transacting against Bitcoin-backed settlement, at gas prices low enough that per-swap automation isn't absurd. Deploying the entire system here — seven contracts, a seeded liquidity position, and two end-to-end swap tests — cost roughly **5 microBTC**.
+
+### The design question GOAT forced, and what came out of it
+
+The original version of this project ran on Reactive Smart Contracts: an off-chain network watches for events and calls your contract, so nobody has to run a keeper. Bringing it to GOAT meant answering three questions with evidence rather than assumption — and the answers changed the architecture for the better.
+
+**1. Reactive Network does not reach GOAT.** Verified directly against `dev.reactive.network/origins-and-destinations`: GOAT appears as neither origin nor destination, on mainnet or testnet. Chainlink Automation and Gelato don't cover it either — GOAT's BitVM2 testnet is new enough that the incumbent automation networks haven't integrated it. A straight port was never an option.
+
+**2. GoatSwap and BIMA are mainnet-only.** GoatSwap's `SwapRouter02` has 48,226 real transactions on GOAT's Alpha Mainnet; the same address on Testnet3 is an empty EOA with zero transactions. BIMA turned out to be a deeper mismatch than a missing address — its own documentation describes borrowing as *permissioned institutional* with collateral in *qualified custody*. That's off-chain and KYC'd: there is no open, on-chain health factor for an agent to defend, so it can't stand in for Aave regardless of which network it's on.
+
+**3. So what actually makes automation trustless?** Strip Reactive Network, Chainlink Automation, and Gelato down and they are the same machine: a marketplace of off-chain callers competing to hit a public on-chain function. The trust doesn't come from *who* calls it. It comes from the function being **open to anyone** and doing exactly what its audited code says.
+
+Which means the automation layer was never the load-bearing part — the property was. GOAT already demonstrates this pattern natively: BIMA's liquidations are permissionless and bounty-incentivized, driven by open competition rather than a privileged relay.
+
+So the GOAT deployment doesn't emulate Reactive Network. It implements the property directly:
+
+```solidity
+// DCAStrategyCallbackGoat.sol
+function executeDCAOrders() external returns (uint256 swapsExecuted) {
+```
+
+**No `onlyOwner`. No `authorizedSenderOnly`. No access-control modifier of any kind.**
+
+This server runs a scheduler that calls it every 60 seconds — but that scheduler holds no privilege whatsoever. Any wallet on GOAT can make the identical call and produce the identical result. If this server disappeared tomorrow, every active DCA order would remain executable by anyone who cared to execute it. That is a *stronger* guarantee than the original design, and it arrived because GOAT had no automation network to lean on.
+
+### Deployed on GOAT Testnet3 (chain ID `48816`)
 
 | Contract | Address | What it is |
 |---|---|---|
-| UniswapV3Factory | `0x481294586d888EA5E409cd9719E79308c5996775` | Unmodified, audited Uniswap V3 Core (`lib/v3-core`) — GoatSwap has no testnet3 deployment to use, so this is our own |
-| dUSDC/WGBTC Pool | `0x2e99414793de595ad6cdcc1aa0dfc6b33c1bce36` | Real pool, real liquidity, created via the factory above |
-| DCAStrategyCallbackGoat | `0xd630cf0E2e9bcB0d76c25Eb87C1cBE9e3eDFdad7` | The automation contract — `executeDCAOrders()` has **no access-control modifier at all** |
+| `DCAStrategyCallbackGoat` | [`0xd630cf0E2e9bcB0d76c25Eb87C1cBE9e3eDFdad7`](https://explorer.testnet3.goat.network/address/0xd630cf0E2e9bcB0d76c25Eb87C1cBE9e3eDFdad7) | The automation contract — permissionless execution |
+| `UniswapV3Factory` | [`0x481294586d888EA5E409cd9719E79308c5996775`](https://explorer.testnet3.goat.network/address/0x481294586d888EA5E409cd9719E79308c5996775) | Unmodified, audited Uniswap V3 Core (`lib/v3-core`) |
+| dUSDC/WGBTC Pool | [`0x2e99414793de595ad6cdcc1aa0dfc6b33c1bce36`](https://explorer.testnet3.goat.network/address/0x2e99414793de595ad6cdcc1aa0dfc6b33c1bce36) | Real pool with seeded liquidity |
+| `MiniSwapRouter` | `0xB38E85B614EF50E2A60c9F4781A1b128f0fB7246` | Minimal swap router over the pool |
+| `LiquidityHelper` | `0x5f474dB0470e7102072517b0991e487Dd785cA4F` | Position seeding |
+| `DemoUSDC` (dUSDC) | `0xF35b99BaE312FD59145F5eBE4482fD433d1C7E20` | Testnet stablecoin stand-in |
+| WGBTC | `0xbC10000000000000000000000000000000000000` | GOAT's canonical wrapped-native predeploy |
 
-Deployed on a wallet generated for this purpose, funded from GOAT's public testnet faucet, at a gas price of roughly 0.00013 gwei — the whole build (7 contract deploys, a seeded liquidity position, and two end-to-end swap tests) cost about **5 microBTC**. Full record, transaction hashes, and a real `eth_estimateGas` gotcha hit and fixed along the way: [`goat-research/07-testnet3-deployment.md`](./goat-research/07-testnet3-deployment.md).
+Since GoatSwap has no Testnet3 presence, the swap venue is a real deployment of **unmodified Uniswap V3 Core** rather than a mock AMM — the same audited code securing billions elsewhere. Pool pricing reflects the liquidity we seeded, so the exchange rate is a testnet artifact, not a market rate. The AMM mechanics underneath are the genuine article.
 
-The server now exposes this as a third product, [`/api/goat/dca/*`](./openapi.yaml), alongside the two Base Sepolia services below — x402 payment stays on Base Sepolia (that's where the facilitator is), only DCA execution moves to GOAT. A scheduler (`src/server/goat-scheduler.ts`) polls the permissionless execution function every 60 seconds; it's a convenience, not a requirement — anyone else with any wallet could call the same function and it would work identically.
+### Verified end-to-end
 
-### What's still open
+Not a plan and not a unit test — a real config paid for, created, and executed on-chain:
 
-Liquidation protection (the Aave-equivalent) doesn't have a home on GOAT yet — that's not a todo, it's a real gap in what's currently live on the chain, worth rechecking as the ecosystem matures rather than forcing a fit. Full reasoning, the grant program details, and the architecture decision trail: [`/goat-research`](./goat-research/README.md).
+```
+createDCAConfig()    0xd214e0f67cd091284a7340a6755d53f56de1c0fd3c81e33cd8a42d3320f99d2a
+executeDCAOrders()   0x95cb92330416a5e96e1ac5872ef8c1031321b86eb52391b5555bc3c27b68524f
+                     → 1 dUSDC swapped for WGBTC through the V3 pool
+                     → config auto-marked Completed after its final swap
+```
+
+Full deployment record, every transaction hash, and a genuine `eth_estimateGas` trap hit and fixed along the way — the estimator converges too low because the swap is wrapped in `try/catch`, so the outer call "succeeds" while the inner swap silently runs out of gas: [`goat-research/07-testnet3-deployment.md`](./goat-research/07-testnet3-deployment.md).
+
+The complete research trail — GOAT's architecture, the grants program, on-chain verification of every third-party address, and the automation-alternatives analysis behind the permissionless design — lives in [`/goat-research`](./goat-research/README.md).
 
 ---
 
+## How an agent uses it
+
 ```
-AI Agent (wallet = identity)
-    |
-    |  GET  /api/services                    ← discover available services
-    |  POST /api/protect/liquidation         ← hit the service endpoint
-    |
-    v
-x402 Server ──> 402: pay $0.30 USDC on Base Sepolia
-    |
-    |  Agent signs EIP-3009, retries with payment
-    |
-    v
-Payment confirmed (USDC settled on-chain)
-    |
-    ├─ bridge.ts: split USDC payment
-    |    ├─ 20% kept as server margin (USDC)
-    |    └─ 80% swapped USDC → ETH (Uniswap V3)
-    |         ├─ 15% ETH kept for Base gas
-    |         └─ 85% ETH bridged → REACT on Lasna (RC gas)
-    |
-    └─ chain.ts: createProtectionConfig() on AaveProtectionCallback
-         |
-         v
-    CC emits ProtectionConfigured
-         |
-         v
-    RC (Lasna) picks up event
-    ├─ self-callback: persistConfigCreated() → subscribes to CRON
-    └─ CRON fires every ~12 min → checkAndProtectPositions() on CC
-         |
-         v
-    CC checks Aave health factor
-         HF < threshold? → supply collateral / repay debt / both
+1. GET  /api/services              → discover services, pricing, status
+2. POST /api/goat/dca/activate     → 402 Payment Required + exact quote
+3. Sign EIP-3009, retry            → 200, automation live on-chain
 ```
+
+The `402` is the price quote, not an error. An x402 client library handles the loop:
+
+```typescript
+import { wrapFetchWithPayment } from "@x402/fetch";
+import { privateKeyToAccount } from "viem/accounts";
+
+const account = privateKeyToAccount(process.env.AGENT_PRIVATE_KEY as `0x${string}`);
+const pay = wrapFetchWithPayment(fetch, account);   // 402 → sign → retry
+
+const res = await pay("https://rc-agents.vercel.app/api/goat/dca/activate", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    user: account.address,
+    amountPerSwap: "1000000",   // 1 dUSDC (6 decimals)
+    totalSwaps: 24,
+    swapInterval: 3600,         // one hour between swaps
+    duration: 86400,            // paying for one day
+  }),
+});
+
+const { configId, txHash, nextSteps } = await res.json();
+```
+
+Then one on-chain approval — paying activates the automation, but the contract still needs permission to move the user's tokens:
+
+```solidity
+ERC20(dUSDC).approve(dcaStrategyCallbackGoat, amountPerSwap * totalSwaps);
+```
+
+Agents can read [`/skills.md`](https://rc-agents.vercel.app/skills.md) for the full operating guide — when to reach for each service, failure modes, and the approval step that's easiest to miss — and [`/openapi.yaml`](https://rc-agents.vercel.app/openapi.yaml) for machine-readable schemas that agent frameworks can register as tools directly.
 
 ---
 
-## How It Works
+## Verification is part of the product
 
-### The agent's perspective
-
-1. **Discover** — `GET /api/services` returns available services, pricing, and parameter specs
-2. **Quote** — `POST /api/quote` returns the exact USDC cost for a service + duration
-3. **Approve assets** — Agent calls `ERC20.approve(callbackContract, amount)` for collateral and/or debt assets
-4. **Pay and register** — Agent POSTs to the service endpoint with protection params. x402 middleware returns `402 Payment Required`. Agent signs EIP-3009 and retries. Payment settles on-chain.
-5. **Manage** — Agent can pause, resume, or cancel the config via dedicated endpoints
-6. **Protected** — The RC monitors and acts autonomously every ~12 minutes until cancelled
-
-### The server's perspective
-
-1. **x402 middleware** intercepts the request, verifies/settles USDC via the facilitator
-2. **Payment confirmed** — handler extracts the payer's address from the payment header
-3. **RC balance check** — queries the RC on Lasna to verify it has enough REACT for callbacks
-4. **Config creation** — calls `createProtectionConfig()` on the CC (Base Sepolia), parses the config ID from the `ProtectionConfigured` event
-5. **Funding pipeline** — splits the USDC into server margin, gas reserve, and RC funding
-6. **Response** — returns config ID, tx hash, and next steps to the agent
-
-### The contracts' perspective
-
-**CC** (`AaveProtectionCallback` on Base Sepolia):
-- Stores protection configs with health factor thresholds, target HF, asset choices
-- `checkAndProtectPositions(address sender)` is called by the RC via Reactive Network
-- Checks each active config against Aave, executes protection (collateral deposit, debt repayment, or both)
-- Emits lifecycle events: `ProtectionConfigured`, `ProtectionExecuted`, `ProtectionCancelled`, `ProtectionPaused`, `ProtectionResumed`, `ProtectionCycleCompleted`
-- Auto-cancels after 5 consecutive failures. 30s retry cooldown.
-
-**RC** (`AaveProtectionReactive` on Lasna):
-- Subscribes to CC lifecycle events + CRON_100 (~12 min) tick
-- `react(LogRecord)` routes events to self-callback functions for state persistence
-- Lazy cron subscription: subscribes when first config created, unsubscribes when last config cancelled
-- `getPausableSubscriptions()` returns the cron subscription for pause/resume support
+Agents transact without supervision, so the people behind them need a way to check the machine's work. [rc-agents.vercel.app](https://rc-agents.vercel.app) is a **read-only monitoring surface**: contract addresses linked to explorers, executor gas, every DCA config with its swap history, and lifetime execution totals. Nothing on that page can change on-chain state — it exists to be audited, not operated. The same data is available as JSON at [`/api/dashboard`](https://rc-agents.vercel.app/api/dashboard) and as a funding check at [`/health`](https://rc-agents.vercel.app/health).
 
 ---
 
 ## Architecture
 
-Each service is a **specialized contract pair** — one RC on the Reactive Network (Lasna testnet), one CC on the destination chain (Base Sepolia). Contracts are deployed separately via Foundry. This repo is the **server layer** that bridges x402 payments to on-chain registration.
-
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│ Server (this repo)                                              │
-│                                                                 │
-│  index.ts ─── Express + x402 middleware ─── API routes          │
-│     │                                                           │
-│     ├── services.ts ─── service catalog + integer pricing       │
-│     ├── chain.ts ────── viem clients + contract calls           │
-│     ├── bridge.ts ───── USDC split → Uniswap swap → RN bridge  │
-│     ├── contracts.ts ── addresses, proxies, cron topics, chains │
-│     └── abis/ ───────── CC + RC ABIs (update after deploy)     │
-│                                                                 │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼                         ▼
-   AaveProtectionCallback      AaveProtectionReactive
-   Base Sepolia (84532)        Lasna Testnet (5318007)
-   ─────────────────────       ─────────────────────────
-   AbstractCallback            AbstractPausableReactive
-   authorizedSenderOnly        react(LogRecord)
-   createProtectionConfig()    self-callbacks for state
-   checkAndProtectPositions()  lazy cron subscribe/unsub
-   pause/resume/cancel         getPausableSubscriptions()
+AI Agent (wallet = identity)
+    │
+    │  GET  /api/services              discover
+    │  POST /api/goat/dca/activate     purchase
+    │
+    ▼
+x402 Server ──────► 402: pay $0.24 USDC on Base Sepolia
+    │
+    │  Agent signs EIP-3009, retries with payment
+    ▼
+Payment settles on-chain (Base Sepolia)
+    │
+    ├─────────────────────────────┬──────────────────────────────┐
+    ▼                             ▼                              ▼
+GOAT Testnet3                 Base Sepolia                  Base Sepolia
+DCAStrategyCallbackGoat       AaveProtectionCallback         bridge.ts
+createDCAConfig()             createProtectionConfig()       splits USDC →
+    │                             │                          gas + RC funding
+    ▼                             ▼
+executeDCAOrders()            Reactive Contract (Lasna)
+NO ACCESS CONTROL             CRON_100 tick (~12 min)
+anyone may call                   │
+    │                             ▼
+    ▼                         checkAndProtectPositions()
+Uniswap V3 swap               HF < threshold? supply / repay
+dUSDC → WGBTC
 ```
 
----
+Two automation models, one payment rail. On Base Sepolia, a Reactive Contract on Lasna subscribes to a CRON topic and calls back into the Callback Contract. On GOAT, there is no relay at all — the execution function is simply open.
 
-## Project Structure
+### Repository layout
 
 ```
 src/
-  abis/
-    aave-protection-callback.ts   CC ABI (parseAbi, update after deploy)
-    aave-protection-reactive.ts   RC ABI (minimal views)
-  config/
-    contracts.ts                  Addresses, callback proxies, cron topics,
-                                  chain IDs, faucets, Aave protocol addresses
-    services.ts                   Service catalog, pricing (bigint math)
-  contracts/
-    AaveProtectionCallback.sol    CC source (deploy via Foundry)
-    AaveProtectionReactive.sol    RC source (deploy via Foundry)
-    RescuableBase.sol             Base contract for asset rescue
   server/
-    index.ts                      Express + x402, all API routes
-    chain.ts                      viem clients (Base Sepolia + Lasna),
-                                  createProtectionConfig, pause/resume/cancel,
-                                  getProtectionConfig, getHealthFactor
-    bridge.ts                     USDC → ETH → REACT funding pipeline
+    index.ts           Express + x402 middleware, all API routes
+    chain.ts           viem clients — Base Sepolia + Lasna
+    chain-goat.ts      viem clients — GOAT Testnet3
+    goat-scheduler.ts  unprivileged caller for executeDCAOrders()
+    bridge.ts          USDC → ETH → REACT funding pipeline
+    landing.ts         read-only monitoring dashboard
+  contracts/
+    goat/
+      DCAStrategyCallbackGoat.sol   permissionless DCA execution
+      MiniSwapRouter.sol            minimal V3 router
+      LiquidityHelper.sol           pool seeding
+      DemoUSDC.sol                  testnet stablecoin
+    AaveProtectionCallback.sol      CC — Base Sepolia
+    AaveProtectionReactive.sol      RC — Lasna
+    DCAStrategyCallback.sol         CC — Base Sepolia
+    DCAStrategyReactive.sol         RC — Lasna
+  config/
+    contracts.ts       addresses, callback proxies, cron topics, chain IDs
+    services.ts        service catalog + integer pricing
+lib/v3-core            Uniswap V3 Core (git submodule, unmodified)
+goat-research/         GOAT findings and architecture decision trail
+SKILLS.md              agent-facing skill card, served at /skills.md
 ```
 
 ---
 
-## Deployed Contracts (Base Sepolia Testnet)
+## API reference
+
+### Free — read anything, pay for nothing
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/services` | catalog, pricing, per-service status |
+| `POST /api/quote` | exact price for a service + duration |
+| `GET /api/dashboard` | full live on-chain state |
+| `GET /health` | whether automation contracts are funded |
+| `GET /api/goat/dca/config/:id` | one GOAT config: swaps executed, amount received |
+| `GET /api/goat/dca/user/:address` | every GOAT config for a user |
+| `GET /api/status/config/:id` | one protection config |
+| `GET /api/status/health/:address` | a user's live Aave health factor |
+| `POST /api/approve/permit` | relay an EIP-2612 permit for HTTP-only agents |
+
+Pause, resume, and cancel are free across all services. Cancelling does not refund remaining duration.
+
+### Paid (x402)
+
+**`POST /api/goat/dca/activate`** — DCA on GOAT Testnet3
+
+| Field | Type | Notes |
+|---|---|---|
+| `user` | address | must hold dUSDC and approve the contract |
+| `amountPerSwap` | string | base units, 6 decimals |
+| `totalSwaps` | int | `0` = run until expiry or cancel |
+| `swapInterval` | int | seconds, minimum `60` |
+| `minAmountOut` | string | slippage floor; `"0"` disables |
+| `duration` | int | seconds, 3600–2592000 |
+
+**`POST /api/protect/liquidation`** — Aave liquidation protection
+
+| Field | Type | Notes |
+|---|---|---|
+| `protectedUser` | address | whose position to watch |
+| `protectionType` | int | `0` collateral, `1` repay debt, `2` both |
+| `healthFactorThreshold` | string | 18 decimals — `"1500000000000000000"` = HF 1.5 |
+| `targetHealthFactor` | string | 18 decimals, must exceed the threshold |
+| `duration` | int | seconds, 3600–2592000 |
+
+Pricing is integer math throughout — `pricePerDay × duration / 86400`, plus a 20% gas buffer, no floating point anywhere in the path.
+
+---
+
+## Running it yourself
+
+```bash
+git clone --recursive https://github.com/harshkas4na/rc-agents
+cd rc-agents && npm install
+cp .env.example .env
+npm run dev
+```
+
+| Variable | What it is |
+|---|---|
+| `SERVER_WALLET_ADDRESS` / `SERVER_PRIVATE_KEY` | receives x402 USDC, owns the callback contracts |
+| `GOAT_DEPLOYER_PRIVATE_KEY` | owns `DCAStrategyCallbackGoat`, pays scheduler gas |
+| `AAVE_PROTECTION_CALLBACK_ADDRESS` | CC on Base Sepolia |
+| `AAVE_PROTECTION_REACTIVE_ADDRESS` | RC on Lasna |
+
+BTC for GOAT Testnet3 gas: [bridge.testnet3.goat.network/faucet](https://bridge.testnet3.goat.network/faucet). USDC for x402 payments: [faucet.circle.com](https://faucet.circle.com).
+
+On a persistent host, `goat-scheduler.ts` polls `executeDCAOrders()` every 60 seconds. On serverless, `POST|GET /api/goat/dca/tick` does the same thing once per invocation and can be driven by any external scheduler — or by nobody at all, since the underlying function is open to every wallet on the network.
+
+---
+
+## Reference
+
+| Chain | ID | RPC |
+|---|---|---|
+| GOAT Testnet3 | `48816` | `https://rpc.testnet3.goat.network` |
+| Base Sepolia | `84532` | `https://sepolia.base.org` |
+| Lasna (Reactive) | `5318007` | `https://lasna-rpc.rnk.dev/` |
 
 | Contract | Address |
 |---|---|
 | AaveProtectionCallback (CC) | `0x24df0bBC9c4b95e8643848EC6B7f0Ac638BD3476` |
 | AaveProtectionReactive (RC) | `0xb1d20ecA7e6e6998A985C41Ae69695125F67619D` |
-
-| Aave V3 Contract | Address |
-|---|---|
-| Pool (LendingPool) | `0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27` |
-| PoolAddressesProvider | `0xE4C23309117Aa30342BFaae6c95c6478e0A4Ad00` |
-| AaveProtocolDataProvider | `0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b` |
-
-**Important — two different USDC addresses:**
-| Token | Address | Used for |
-|---|---|---|
-| USDC (Circle testnet) | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | x402 payment to server |
-| USDC (Aave testnet) | `0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f` | debt repayment via Aave |
-
----
-
-## Setup
-
-### Prerequisites
-
-- Node.js 18+
-- A wallet with ETH on Base Sepolia (for `createProtectionConfig()` gas)
-- Deployed CC + RC contracts via Foundry (see below)
-- lREACT tokens funding the RC on Lasna
-
-### 1. Install
-
-```bash
-git clone <repo-url>
-cd rc-agents
-npm install
-```
-
-### 2. Deploy contracts (via Foundry)
-
-```bash
-# Get lREACT tokens for Lasna gas (send ETH to faucet on Base Sepolia)
-cast send 0x2afaFD298b23b62760711756088F75B7409f5967 \
-  --value 0.1ether \
-  --rpc-url https://sepolia.base.org \
-  --private-key $PRIVATE_KEY
-
-# Build bytecode then deploy CC to Base Sepolia
-# Constructor: owner, callbackProxy, lendingPool, dataProvider, addressesProvider
-cast send \
-  --rpc-url https://sepolia.base.org \
-  --private-key $PRIVATE_KEY \
-  --value 0.0001ether \
-  --create $(forge inspect src/contracts/AaveProtectionCallback.sol:AaveProtectionCallback bytecode)$(cast abi-encode \
-    "constructor(address,address,address,address,address)" \
-    $DEPLOYER_ADDR \
-    0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6 \
-    0x8bAB6d1b75f19e9eD9fCe8b9BD338844fF79aE27 \
-    0xBc9f5b7E248451CdD7cA54e717a2BFe1F32b566b \
-    0xE4C23309117Aa30342BFaae6c95c6478e0A4Ad00 | cut -c3-)
-
-# Deploy RC to Lasna
-# Constructor: owner, ccAddress, cronTopic (CRON_100), destChainId (Base Sepolia)
-cast send \
-  --rpc-url https://lasna-rpc.rnk.dev/ \
-  --private-key $PRIVATE_KEY \
-  --value 1ether \
-  --create $(forge inspect src/contracts/AaveProtectionReactive.sol:AaveProtectionReactive bytecode)$(cast abi-encode \
-    "constructor(address,address,uint256,uint256)" \
-    $DEPLOYER_ADDR \
-    $CC_ADDRESS \
-    0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70 \
-    84532 | cut -c3-)
-```
-
-### 3. Configure
-
-```bash
-cp .env.example .env
-```
-
-| Variable | What it is |
-|---|---|
-| `SERVER_WALLET_ADDRESS` | Wallet that receives x402 USDC and owns the CC |
-| `SERVER_PRIVATE_KEY` | Private key for that wallet (with or without `0x` prefix) |
-| `AAVE_PROTECTION_CALLBACK_ADDRESS` | CC address on Base Sepolia |
-| `AAVE_PROTECTION_REACTIVE_ADDRESS` | RC address on Lasna |
-
-### 4. Start server
-
-```bash
-npm run dev
-```
-
----
-
-## API Reference
-
-### Machine-readable spec
-
-```
-GET /openapi.yaml   (serve statically) — OpenAPI 3.1 spec for agent tool registration
-```
-
-For AI agent frameworks that auto-discover tools from OpenAPI specs (OpenClaw, LangChain tools, Claude tools), point them at the spec. All endpoints, request/response schemas, and the x402 payment flow are documented there.
-
-### Free endpoints
-
-**`GET /api/services`** — Service catalog with pricing
-
-**`POST /api/quote`** — Exact price for a duration
-```json
-{ "service": "aave-protection", "durationSeconds": 86400 }
-```
-
-**`GET /api/status/config/:configId`** — Protection config details
-
-**`GET /api/status/health/:userAddress`** — Current Aave health factor
-
-**`GET /api/status/configs`** — All active config IDs
-
-**`GET /health`** — Server health + RC balance check
-
-### 402-gated endpoint
-
-**`POST /api/protect/liquidation`** — Create protection config
-
-```json
-{
-  "protectedUser": "0x...",
-  "protectionType": 0,
-  "healthFactorThreshold": "1500000000000000000",
-  "targetHealthFactor": "2000000000000000000",
-  "collateralAsset": "0x4200000000000000000000000000000000000006",
-  "debtAsset": "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f",
-  "preferDebtRepayment": false,
-  "duration": 86400
-}
-```
-
-Protection types: `0` = collateral deposit, `1` = debt repayment, `2` = both
-
-### Config management (free, owner-only)
-
-**`POST /api/protect/liquidation/pause`** — Pause a config
-```json
-{ "configId": 0 }
-```
-
-**`POST /api/protect/liquidation/resume`** — Resume a paused config
-
-**`POST /api/protect/liquidation/cancel`** — Cancel a config permanently
-
----
-
-## AI Agent Integration
-
-### What an agent needs
-
-An AI agent needs three things to use this service:
-
-1. **A wallet with USDC on Base Sepolia** — Get from [faucet.circle.com](https://faucet.circle.com). The x402 payment is 0.30 USDC for 1 day of protection.
-2. **x402 payment capability** — The `@x402/fetch` SDK handles 402 responses automatically: it sees the 402, signs the EIP-3009 authorization with the agent's private key, and retries the request. No separate facilitator interaction needed by the agent.
-3. **One on-chain approval** — Before protection can execute, the agent must call `ERC20.approve(callbackContract, amount)` for the collateral and/or debt assets on Base Sepolia. This is the only step that requires direct chain interaction beyond x402.
-
-### Is the OpenAPI spec enough?
-
-**Almost.** The spec covers full discovery and interaction. But the token approval step (step 3 above) is a direct EVM transaction — not an API call. An agent that can only make HTTP requests will need to be told: *"after registering, approve the callback contract to spend your tokens."* The `nextSteps` array in the API response tells it exactly which contract to approve and which assets.
-
-For a fully autonomous agent (one that can also sign EVM transactions), the OpenAPI spec is sufficient — it documents the approval requirement in the endpoint description.
-
-### OpenClaw / Claude / LangChain integration
-
-```typescript
-// 1. Register the OpenAPI spec as a tool source
-// Point your agent framework at: http://localhost:3000/openapi.yaml
-// The agent will discover: listServices, getQuote, createLiquidationProtection,
-//   pauseLiquidationProtection, resumeLiquidationProtection, cancelLiquidationProtection,
-//   getProtectionConfig, getHealthFactor, listActiveConfigs, getServerHealth
-
-// 2. The agent needs x402 fetch wrapper for payment
-import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
-import { registerExactEvmScheme } from "@x402/evm/exact/client";
-import { privateKeyToAccount } from "viem/accounts";
-
-const account = privateKeyToAccount(AGENT_PRIVATE_KEY);
-const client = new x402Client();
-registerExactEvmScheme(client, { signer: account });
-const x402Fetch = wrapFetchWithPayment(fetch, client);
-
-// All HTTP calls go through x402Fetch — 402 responses are handled transparently.
-// Free endpoints (services, quote, status) work with plain fetch too.
-
-// 3. One-time approval before protection can execute
-// Agent calls this on Base Sepolia for each asset it wants to use:
-//   ERC20(collateralAsset).approve(callbackContractAddress, largeAmount)
-//   ERC20(debtAsset).approve(callbackContractAddress, largeAmount)
-```
-
-### Full agent example
-
-```typescript
-import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
-import { registerExactEvmScheme } from "@x402/evm/exact/client";
-import { privateKeyToAccount } from "viem/accounts";
-
-const SERVER = "http://localhost:3000";
-const account = privateKeyToAccount(process.env.AGENT_PRIVATE_KEY as `0x${string}`);
-const client = new x402Client();
-registerExactEvmScheme(client, { signer: account });
-const x402Fetch = wrapFetchWithPayment(fetch, client);
-
-// Discover
-const { services } = await (await fetch(`${SERVER}/api/services`)).json();
-
-// Quote
-const { priceBaseUnits } = await (await fetch(`${SERVER}/api/quote`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ service: "aave-protection", durationSeconds: 86400 }),
-})).json();
-
-// Pay and register (x402 handles the 402 → sign → retry automatically)
-const res = await x402Fetch(`${SERVER}/api/protect/liquidation`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    protectedUser: account.address,
-    protectionType: 2,                            // BOTH: collateral + debt
-    healthFactorThreshold: "1500000000000000000", // trigger at HF 1.5
-    targetHealthFactor: "2000000000000000000",    // restore to HF 2.0
-    collateralAsset: "0x4200000000000000000000000000000000000006", // WETH
-    debtAsset: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f",       // Aave USDC
-    preferDebtRepayment: false,
-    duration: 86400,
-  }),
-});
-
-const { configId, nextSteps } = await res.json();
-// configId: "0"
-// nextSteps: ["Approve AaveProtectionCallback (0x24df...) to spend your WETH and USDC"]
-
-// Monitor
-const config = await (await fetch(`${SERVER}/api/status/config/${configId}`)).json();
-// { status: "Active", executionCount: 0, healthFactorThreshold: "1500000000000000000", ... }
-```
-
----
-
-## Funding Pipeline
-
-```
-$0.30 USDC payment
-  │
-  ├─ 20% ($0.06) ──> server margin (stays as USDC)
-  │
-  └─ 80% ($0.24) ──> Uniswap V3 swap ──> ETH
-                       │
-                       ├─ 15% ETH ──> gas reserve (stays on Base Sepolia)
-                       │
-                       └─ 85% ETH ──> Reactive Network bridge ──> REACT on Lasna
-                                       (funds RC for callback delivery)
-```
-
-Set `BRIDGE_MODE=live` in `.env` to activate automated swap. Default is dry-run (logged only, fund RC manually).
-
----
-
-## Reactive Network Details
-
-| Item | Value |
-|---|---|
-| Testnet name | Lasna |
-| Chain ID | 5318007 |
-| RPC | `https://lasna-rpc.rnk.dev/` |
-| Explorer | `https://lasna.reactscan.net` |
+| USDC — x402 payments | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
+| USDC — Aave testnet | `0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f` |
 | Callback Proxy (Base Sepolia) | `0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6` |
-| Callback Proxy (Sepolia) | `0xc9f36411C9897e7F959D99ffca2a0Ba7ee0D7bDA` |
 | CRON_100 topic (~12 min) | `0xb49937fb8970e19fd46d48f7e3fb00d659deac0347f79cd7cb542f0fc1503c70` |
-| lREACT faucet (Sepolia) | Send ETH to `0x9b9BB25f1A81078C544C829c5EB7822d747Cf434` (max 5 ETH/tx) |
-| lREACT faucet (Base Sepolia) | Send ETH to `0x2afaFD298b23b62760711756088F75B7409f5967` |
+
+Aave uses a different USDC than x402 does — that's a real trap on Base Sepolia, and both addresses are pinned in `src/config/contracts.ts` for exactly that reason.
+
+Background research on the x402 protocol itself — flow, headers, EIP-712/3009, facilitators, ecosystem, and honest limitations — is in [`01-overview.md`](./01-overview.md) through [`07-limitations.md`](./07-limitations.md).
 
 ---
 
-## Adding a New Service
+## Where this goes next
 
-1. Write and deploy CC + RC (inheriting `AbstractCallback` / `AbstractPausableReactive`)
-2. Add ABI file in `src/abis/`
-3. Add entry to `src/config/services.ts`
-4. Add 402-gated route + chain helpers
-5. Set env vars, restart
+**Liquidation protection on GOAT.** The permissionless execution pattern generalizes directly from DCA to health-factor defense — the contract shape is nearly identical. What it needs is an open, on-chain money market on GOAT to defend a position in. BIMA's permissioned-custody model isn't one, and that's a fact about today's ecosystem rather than a limitation of this design. When an open lending market lands on GOAT, protection ships against it.
 
----
+**Mainnet.** GoatSwap is live and busy on GOAT Alpha Mainnet with real liquidity, which removes the reason we deployed our own Uniswap V3 Core. Mainnet execution routes through GoatSwap rather than a self-deployed venue.
 
-## Design Decisions
-
-| Decision | Why |
-|---|---|
-| Server separate from contracts | Contracts deploy via Foundry; server is API + bridge |
-| Specialized contracts per service | Isolation, independent deploy, no shared state risk |
-| RC stateless in react() | react() can't read post-deploy state; CC owns all logic |
-| Lazy cron subscription | RC only subscribes to CRON when active configs exist |
-| Self-callbacks for RC state | react() emits Callback to itself; callbackOnly persists |
-| address sender first param | Reactive Network mandatory pattern for all callback targets |
-| Integer pricing (bigint) | No float drift. Multiply before divide. |
-| BRIDGE_MODE toggle | Dry-run by default. Live only after testing swap + bridge. |
-| Two USDC addresses | Circle USDC for x402 payments; Aave uses its own testnet USDC |
-
----
-
-## x402 Protocol Reference
-
-| File | Contents |
-|---|---|
-| [`01-overview.md`](./01-overview.md) | What x402 is, origin, core concepts, ecosystem stats |
-| [`02-how-it-works.md`](./02-how-it-works.md) | Full protocol flow, headers, EIP-712/3009, facilitator API |
-| [`03-implementation.md`](./03-implementation.md) | Server + client code examples (TS, Python, Go) |
-| [`04-facilitators.md`](./04-facilitators.md) | Facilitator architecture, running your own |
-| [`05-use-cases.md`](./05-use-cases.md) | AI agents, micropayments, infrastructure billing |
-| [`06-ecosystem.md`](./06-ecosystem.md) | SDKs, chains, tools, platform integrations |
-| [`07-limitations.md`](./07-limitations.md) | Token lock-in, latency, audit gaps, centralization risks |
-
----
-
-## Quick Reference
-
-```
-Testnet facilitator:           https://x402.org/facilitator
-Base Sepolia RPC:              https://sepolia.base.org
-Lasna RPC:                     https://lasna-rpc.rnk.dev/
-Lasna explorer:                https://lasna.reactscan.net
-USDC faucet (payments):        https://faucet.circle.com (Base Sepolia) → 0x036CbD53842c5426634e7929541eC2318f3dCF7e
-USDC faucet (Aave):            Get from Aave testnet app (Base Sepolia) → 0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f
-x402 npm:                      @x402/express @x402/core @x402/evm @x402/fetch
-Callback Proxy (Base Sepolia): 0xa6eA49Ed671B8a4dfCDd34E36b7a75Ac79B8A5a6
-AaveProtectionCallback:        0x24df0bBC9c4b95e8643848EC6B7f0Ac638BD3476
-AaveProtectionReactive:        0xb1d20ecA7e6e6998A985C41Ae69695125F67619D
-```
+**Bounty-funded execution.** `DCAStrategyCallbackGoat` already carries an `executionBounty` field. Funding it turns the permissionless call into a paid one, so third-party executors have an economic reason to compete — closing the loop on automation that needs no operator at all.
