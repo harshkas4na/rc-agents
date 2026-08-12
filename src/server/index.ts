@@ -87,6 +87,14 @@ import { startGoatScheduler } from "./goat-scheduler";
 import { parseAbi, type Address } from "viem";
 
 const app = express();
+
+// Behind Vercel's proxy, req.protocol reports "http" unless the forwarded
+// headers are trusted — which leaks into two places that matter: the landing
+// page hands agents http:// URLs on an https site, and the x402 challenge
+// advertises its resource as http://, which strict clients may refuse to match
+// against the URL they actually called.
+app.set("trust proxy", true);
+
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
@@ -239,6 +247,21 @@ app.get("/dashboard.js", (_req: Request, res: Response) => {
 
 // ── Free endpoints ────────────────────────────────────────────────────────────
 
+/**
+ * A service is only "live" if the contracts it dispatches to actually exist in
+ * this deployment. Reporting a hardcoded "live" for everything means an agent
+ * discovers a service here, pays for it, and only then finds out the contract
+ * address was never configured — the catalog has to agree with /health.
+ *
+ * dca-strategy-goat has no env dependency: its addresses are baked into
+ * src/config/contracts.ts because they're a fixed Testnet3 deployment.
+ */
+function serviceStatus(serviceId: string): "live" | "not configured" {
+  const svc = SERVICES[serviceId];
+  if (!svc?.callbackAddressEnv) return "live";
+  return process.env[svc.callbackAddressEnv] ? "live" : "not configured";
+}
+
 app.get("/api/services", (_req: Request, res: Response) => {
   const catalog = Object.values(SERVICES).map((svc) => ({
     id: svc.id,
@@ -257,7 +280,7 @@ app.get("/api/services", (_req: Request, res: Response) => {
       maxDurationSeconds: svc.maxDuration,
     },
     network: NETWORK,
-    status: "live",
+    status: serviceStatus(svc.id),
   }));
 
   res.json({ services: catalog });
